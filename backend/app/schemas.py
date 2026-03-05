@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # === Auth ===
@@ -48,11 +48,24 @@ class TeamCreate(BaseModel):
     description: Optional[str] = None
 
 
+def _validate_event_date(v: datetime) -> datetime:
+    if v.year < 2000 or v.year > 2100:
+        raise ValueError("start_date must be between year 2000 and 2100")
+    if v.tzinfo is None:
+        v = v.replace(tzinfo=timezone.utc)
+    return v
+
+
 class EventCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
     start_date: datetime
     location: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, v: datetime) -> datetime:
+        return _validate_event_date(v)
     criteria: list[CriterionCreate] = Field(min_length=1)
     teams: list[TeamCreate] = Field(min_length=1)
     judge_count: int = Field(ge=1, le=100)
@@ -67,6 +80,10 @@ class EventCreate(BaseModel):
     overlay_enabled: bool = Field(default=True)
     overlay_color: str = Field(default="#000000", max_length=7)
     overlay_opacity: Decimal = Field(default=Decimal("0.35"), ge=0, le=1)
+    criteria_label: Optional[str] = Field(None, max_length=50)
+    criteria_label_enabled: bool = Field(default=True)
+    teams_label: Optional[str] = Field(None, max_length=50)
+    teams_label_enabled: bool = Field(default=True)
 
 
 class JudgeTokenResponse(BaseModel):
@@ -156,6 +173,13 @@ class EventUpdate(BaseModel):
     criteria_label_enabled: Optional[bool] = None
     teams_label: Optional[str] = Field(None, max_length=50)
     teams_label_enabled: Optional[bool] = None
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, v: Optional[datetime]) -> Optional[datetime]:
+        if v is None:
+            return v
+        return _validate_event_date(v)
 
 
 class JudgeTokenUpdate(BaseModel):
