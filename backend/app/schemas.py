@@ -48,11 +48,15 @@ class TeamCreate(BaseModel):
     description: Optional[str] = None
 
 
-def _validate_event_date(v: datetime) -> datetime:
-    if v.year < 2000 or v.year > 2100:
-        raise ValueError("start_date must be between year 2000 and 2100")
+def _clamp_event_date(v: datetime) -> datetime:
     if v.tzinfo is None:
         v = v.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    max_date = datetime(2100, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+    if v < now:
+        v = now
+    if v > max_date:
+        v = max_date
     return v
 
 
@@ -65,7 +69,7 @@ class EventCreate(BaseModel):
     @field_validator("start_date")
     @classmethod
     def validate_start_date(cls, v: datetime) -> datetime:
-        return _validate_event_date(v)
+        return _clamp_event_date(v)
     criteria: list[CriterionCreate] = Field(min_length=1)
     teams: list[TeamCreate] = Field(min_length=1)
     judge_count: int = Field(ge=1, le=100)
@@ -179,7 +183,7 @@ class EventUpdate(BaseModel):
     def validate_start_date(cls, v: Optional[datetime]) -> Optional[datetime]:
         if v is None:
             return v
-        return _validate_event_date(v)
+        return _clamp_event_date(v)
 
 
 class JudgeTokenUpdate(BaseModel):
