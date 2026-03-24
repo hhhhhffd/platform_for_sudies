@@ -61,23 +61,35 @@ async def get_results_data(event_id: str) -> list[dict]:
                 Score.team_id,
                 Score.criterion_id,
                 func.avg(Score.value).label("avg_score"),
+                func.count(Score.judge_id).label("judges_count"),
             )
             .where(Score.event_id == event_id)
             .group_by(Score.team_id, Score.criterion_id)
         )
-        score_map = {}
+        score_map: dict[tuple, tuple] = {}
         for row in scores_result.all():
-            if row.team_id not in score_map:
-                score_map[row.team_id] = Decimal(0)
-            score_map[row.team_id] += round(row.avg_score or Decimal(0), 2)
+            score_map[(row.team_id, row.criterion_id)] = (
+                round(row.avg_score or Decimal(0), 2),
+                row.judges_count,
+            )
 
         results = []
         for team in event.teams:
-            total = score_map.get(team.id, Decimal(0))
+            breakdown = []
+            total = Decimal(0)
+            for criterion in event.criteria:
+                avg_score, jcount = score_map.get((team.id, criterion.id), (Decimal(0), 0))
+                total += avg_score
+                breakdown.append({
+                    "criterion": criterion.name,
+                    "score": float(avg_score),
+                    "judges_count": jcount,
+                })
             results.append({
                 "team_id": str(team.id),
                 "team_name": team.name,
                 "total_score": float(round(total, 2)),
+                "breakdown": breakdown,
             })
 
         results.sort(key=lambda r: r["total_score"], reverse=True)
@@ -86,26 +98,32 @@ async def get_results_data(event_id: str) -> list[dict]:
 
 async def redis_listener():
     """Background task that listens to Redis PubSub for score updates."""
-    if not redis_state.redis_client:
-        return
+    while True:
+        if not redis_state.redis_client:
+            await asyncio.sleep(5)
+            continue
 
-    pubsub = redis_state.redis_client.pubsub()
-    await pubsub.psubscribe("event:*:scores")
-
-    try:
-        async for message in pubsub.listen():
-            if message["type"] == "pmessage":
-                channel = message["channel"]
-                # channel format: "event:{event_id}:scores"
-                parts = channel.split(":")
-                if len(parts) == 3:
-                    event_id = parts[1]
-                    results = await get_results_data(event_id)
-                    await manager.broadcast(event_id, {"type": "update", "results": results})
-    except asyncio.CancelledError:
-        await pubsub.punsubscribe("event:*:scores")
-    except Exception:
-        pass
+        pubsub = redis_state.redis_client.pubsub()
+        try:
+            await pubsub.psubscribe("event:*:scores")
+            async for message in pubsub.listen():
+                if message["type"] == "pmessage":
+                    channel = message["channel"]
+                    # channel format: "event:{event_id}:scores"
+                    parts = channel.split(":")
+                    if len(parts) == 3:
+                        event_id = parts[1]
+                        results = await get_results_data(event_id)
+                        await manager.broadcast(event_id, {"type": "update", "results": results})
+        except asyncio.CancelledError:
+            try:
+                await pubsub.punsubscribe("event:*:scores")
+            except Exception:
+                pass
+            return
+        except Exception:
+            # Reconnect after failure
+            await asyncio.sleep(2)
 
 
 @router.websocket("/ws/events/{event_id}/live")
