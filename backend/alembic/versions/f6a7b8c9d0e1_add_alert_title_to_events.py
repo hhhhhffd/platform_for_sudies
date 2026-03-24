@@ -16,7 +16,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column('events', sa.Column('alert_title', sa.String(255), nullable=True))
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='events' AND column_name='alert_title'"
+    ))
+    if result.fetchone() is None:
+        op.add_column('events', sa.Column('alert_title', sa.String(255), nullable=True))
 
 
 def downgrade() -> None:
