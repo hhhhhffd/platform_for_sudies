@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
+import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -131,7 +132,7 @@ export default function NewEventPage() {
       setResult(res.data);
       setStep(5);
     } catch (e: any) {
-      toast({ title: "Ошибка", description: e.response?.data?.detail || "Не удалось создать", variant: "destructive" });
+      toast({ title: "Ошибка", description: extractErrorMessage(e, "Не удалось создать"), variant: "destructive" });
     } finally {
       setSubmitting(false);
     }

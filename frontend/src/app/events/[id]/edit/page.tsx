@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import api from "@/lib/api";
+import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -153,7 +154,7 @@ export default function EditEventPage() {
       toast({ title: "✅ Сохранено" });
       router.push(`/events/${id}`);
     } catch (e: any) {
-      toast({ title: "Ошибка", description: e.response?.data?.detail || "Не удалось сохранить", variant: "destructive" });
+      toast({ title: "Ошибка", description: extractErrorMessage(e, "Не удалось сохранить"), variant: "destructive" });
     } finally {
       setSaving(false);
     }

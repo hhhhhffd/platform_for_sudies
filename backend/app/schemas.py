@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # === Auth ===
@@ -40,7 +40,7 @@ class RegisterResponse(BaseModel):
 # === Events ===
 class CriterionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    max_score: Decimal = Field(gt=0, le=1000)
+    max_score: Decimal = Field(gt=0, le=1000000)
 
 
 class TeamCreate(BaseModel):
@@ -197,7 +197,7 @@ class TeamUpdate(BaseModel):
 
 class CriterionUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    max_score: Decimal = Field(gt=0, le=1000)
+    max_score: Decimal = Field(gt=0, le=1000000)
 
 
 class JudgeCreate(BaseModel):

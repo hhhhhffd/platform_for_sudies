@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import api from "@/lib/api";
+import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +36,7 @@ export default function RegisterPage() {
       login(res.data.access_token, res.data.refresh_token, res.data.user.email);
       router.push("/dashboard");
     } catch (e: any) {
-      setError(e.response?.data?.detail || "Ошибка регистрации");
+      setError(extractErrorMessage(e, "Ошибка регистрации"));
     }
   };
 

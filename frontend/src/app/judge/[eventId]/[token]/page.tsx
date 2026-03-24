@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import api from "@/lib/api";
+import { extractErrorMessage } from "@/lib/utils";
 import { syncOfflineScores } from "@/lib/sync";
 
 export default function JudgeAuthPage() {
@@ -23,7 +24,7 @@ export default function JudgeAuthPage() {
         localStorage.setItem("judge_id", res.data.judge_id);
         router.replace(`/scoring/${eventId}`);
       } catch (e: any) {
-        setError(e.response?.data?.detail || "Невалидный токен");
+        setError(extractErrorMessage(e, "Невалидный токен"));
       }
     }
     if (token) auth();
