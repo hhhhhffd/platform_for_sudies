@@ -4,11 +4,11 @@
 
 ## Стек технологий
 
-| Слой | Технологии |
-|------|-----------|
-| **Backend** | FastAPI, Python 3.12, SQLAlchemy (async), PostgreSQL 15, Redis 7 |
-| **Frontend** | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Zustand, Radix UI |
-| **Инфраструктура** | Docker Compose, Nginx, Cloudflare Tunnel (опционально) |
+| Слой               | Технологии                                                                     |
+| ------------------ | ------------------------------------------------------------------------------ |
+| **Backend**        | FastAPI, Python 3.12, SQLAlchemy (async), PostgreSQL 15, Redis 7               |
+| **Frontend**       | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Zustand, Radix UI |
+| **Инфраструктура** | Docker Compose, Nginx, Cloudflare Tunnel                                       |
 
 ## Быстрый старт
 
@@ -25,9 +25,10 @@ cp .env.example .env
 ```
 
 Обязательные переменные:
-- `POSTGRES_PASSWORD` — пароль PostgreSQL
-- `SECRET_KEY` — секретный ключ для JWT
 
+- `POSTGRES_PASSWORD` — пароль PostgreSQL
+
+- `SECRET_KEY` — секретный ключ для JWT
 2. Запустите проект:
 
 ```bash
