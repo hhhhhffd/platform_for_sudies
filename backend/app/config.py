@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     FRONTEND_URL: str = "http://localhost:3000"
     ALGORITHM: str = "HS256"
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "json"  # "json" for prod, "console" for dev
+    ENV: str = "production"
 
     class Config:
         env_file = ".env"

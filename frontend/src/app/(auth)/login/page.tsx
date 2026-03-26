@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -32,8 +31,9 @@ export default function LoginPage() {
   const onSubmit = async (data: FormData) => {
     setError("");
     try {
-      const res = await api.post("/api/auth/login", data);
-      login(res.data.access_token, res.data.refresh_token, data.email);
+      await api.post("/api/auth/login", data);
+      // Tokens are set as httpOnly cookies by the server
+      login(data.email);
       router.push("/dashboard");
     } catch (e: any) {
       setError(extractErrorMessage(e, "Неверный email или пароль"));
@@ -65,10 +65,6 @@ export default function LoginPage() {
               {isSubmitting ? "Вход..." : "Войти"}
             </Button>
           </form>
-          <p className="text-center text-sm text-muted-foreground mt-4">
-            Нет аккаунта?{" "}
-            <Link href="/register" className="text-indigo-400 hover:underline">Зарегистрироваться</Link>
-          </p>
         </CardContent>
       </Card>
     </div>

@@ -7,8 +7,8 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    const token = localStorage.getItem("access_token");
-    router.replace(token ? "/dashboard" : "/login");
+    const isAuth = localStorage.getItem("is_authenticated") === "true";
+    router.replace(isAuth ? "/dashboard" : "/login");
   }, [router]);
 
   return (

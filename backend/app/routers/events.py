@@ -168,12 +168,24 @@ async def create_event(
 async def list_events(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
 ):
+    limit = min(limit, 100)  # cap at 100
+
+    # Count total for pagination
+    total_result = await db.execute(
+        select(func.count(Event.id)).where(Event.user_id == user.id)
+    )
+    total = total_result.scalar() or 0
+
     result = await db.execute(
         select(Event)
         .where(Event.user_id == user.id)
         .options(selectinload(Event.teams), selectinload(Event.judge_tokens))
         .order_by(Event.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     events = result.scalars().all()
 
@@ -188,7 +200,8 @@ async def list_events(
                 judges_count=len(e.judge_tokens),
             )
             for e in events
-        ]
+        ],
+        total=total,
     )
 
 

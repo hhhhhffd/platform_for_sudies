@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +11,11 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import get_current_judge, create_access_token
 from app.database import get_db
+from app.logging_config import get_logger
 from app.models import JudgeToken, Event, Score, Criterion, Team
+from app.redis_client import get_redis
+
+logger = get_logger("judge")
 from app.schemas import (
     JudgeAuth, JudgeAuthResponse, JudgeEventResponse,
     EventInfo, CriterionResponse, TeamResponse,
@@ -17,10 +23,12 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/judge", tags=["judge"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/auth", response_model=JudgeAuthResponse)
-async def judge_auth(data: JudgeAuth, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def judge_auth(request: Request, data: JudgeAuth, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(JudgeToken).where(JudgeToken.token == data.token))
     judge = result.scalar_one_or_none()
     if not judge:
@@ -124,14 +132,15 @@ async def save_scores(
 
     await db.commit()
 
-    # Publish update to Redis for WebSocket
+    # Publish update to Redis for WebSocket (with auto-reconnect)
     try:
-        from app.redis_client import redis_client
-        if redis_client:
-            await redis_client.publish(f"event:{judge.event_id}:scores", "updated")
+        redis = await get_redis()
+        if redis:
+            await redis.publish(f"event:{judge.event_id}:scores", "updated")
     except Exception:
         pass  # Redis not available, skip WebSocket notification
 
+    logger.info("scores_saved", judge_id=str(judge.id), event_id=str(judge.event_id), count=len(data.scores))
     return ScoresSavedResponse(saved=len(data.scores))
 
 

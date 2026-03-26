@@ -128,6 +128,7 @@ class EventListItem(BaseModel):
 
 class EventListResponse(BaseModel):
     events: list[EventListItem]
+    total: int = 0
 
 
 class EventDetailResponse(BaseModel):

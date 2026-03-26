@@ -4,7 +4,7 @@ interface AuthState {
   isAuthenticated: boolean;
   userEmail: string | null;
   hydrated: boolean;
-  login: (accessToken: string, refreshToken: string, email?: string) => void;
+  login: (email?: string) => void;
   logout: () => void;
   hydrate: () => void;
 }
@@ -13,19 +13,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
   userEmail: null,
   hydrated: false,
-  login: (accessToken, refreshToken, email) => {
+  login: (email) => {
     // Clear judge tokens to avoid role conflicts
     localStorage.removeItem("judge_token");
     localStorage.removeItem("judge_event_id");
     localStorage.removeItem("judge_id");
-    localStorage.setItem("access_token", accessToken);
-    localStorage.setItem("refresh_token", refreshToken);
+    // Mark as authenticated (actual tokens are in httpOnly cookies)
+    localStorage.setItem("is_authenticated", "true");
     if (email) localStorage.setItem("user_email", email);
     set({ isAuthenticated: true, userEmail: email || null });
   },
   logout: () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("is_authenticated");
     localStorage.removeItem("user_email");
     // Clear judge tokens too
     localStorage.removeItem("judge_token");
@@ -34,8 +33,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isAuthenticated: false, userEmail: null });
   },
   hydrate: () => {
-    const token = localStorage.getItem("access_token");
+    const isAuth = localStorage.getItem("is_authenticated") === "true";
     const email = localStorage.getItem("user_email");
-    set({ isAuthenticated: !!token, userEmail: email, hydrated: true });
+    set({ isAuthenticated: isAuth, userEmail: email, hydrated: true });
   },
 }));

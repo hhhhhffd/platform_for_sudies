@@ -42,7 +42,7 @@ export default function DashboardPage() {
         <h1 className="text-xl font-bold">🏆 JudgeFlow</h1>
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">{userEmail}</span>
-          <Button variant="outline" size="sm" onClick={() => { logout(); router.push("/login"); }}>
+          <Button variant="outline" size="sm" onClick={async () => { try { await api.post("/api/auth/logout"); } catch {} logout(); router.push("/login"); }}>
             Выйти
           </Button>
         </div>

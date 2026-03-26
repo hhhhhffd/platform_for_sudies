@@ -7,8 +7,11 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.database import async_session
+from app.logging_config import get_logger
 from app.models import Event, Score
-import app.redis_client as redis_state
+from app.redis_client import get_redis
+
+logger = get_logger("websocket")
 
 router = APIRouter(tags=["websocket"])
 
@@ -99,13 +102,15 @@ async def get_results_data(event_id: str) -> list[dict]:
 async def redis_listener():
     """Background task that listens to Redis PubSub for score updates."""
     while True:
-        if not redis_state.redis_client:
+        redis = await get_redis()
+        if not redis:
             await asyncio.sleep(5)
             continue
 
-        pubsub = redis_state.redis_client.pubsub()
+        pubsub = redis.pubsub()
         try:
             await pubsub.psubscribe("event:*:scores")
+            logger.info("Redis PubSub listener started")
             async for message in pubsub.listen():
                 if message["type"] == "pmessage":
                     channel = message["channel"]
@@ -121,8 +126,8 @@ async def redis_listener():
             except Exception:
                 pass
             return
-        except Exception:
-            # Reconnect after failure
+        except Exception as e:
+            logger.warning("Redis PubSub error, reconnecting in 2s: %s", e)
             await asyncio.sleep(2)
 
 

@@ -1,44 +1,11 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import api from "@/lib/api";
-import { extractErrorMessage } from "@/lib/utils";
-import { useAuthStore } from "@/stores/auth-store";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-
-const schema = z.object({
-  email: z.string().email("Невалидный email"),
-  password: z.string().min(8, "Минимум 8 символов"),
-});
-
-type FormData = z.infer<typeof schema>;
+import { Button } from "@/components/ui/button";
 
 export default function RegisterPage() {
   const router = useRouter();
-  const login = useAuthStore((s) => s.login);
-  const [error, setError] = useState("");
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
-    resolver: zodResolver(schema),
-  });
-
-  const onSubmit = async (data: FormData) => {
-    setError("");
-    try {
-      const res = await api.post("/api/auth/register", data);
-      login(res.data.access_token, res.data.refresh_token, res.data.user.email);
-      router.push("/dashboard");
-    } catch (e: any) {
-      setError(extractErrorMessage(e, "Ошибка регистрации"));
-    }
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)" }}>
@@ -46,29 +13,15 @@ export default function RegisterPage() {
         <CardHeader className="text-center">
           <div className="text-5xl mb-2">🏆</div>
           <CardTitle className="text-3xl">JudgeFlow</CardTitle>
-          <CardDescription>Создайте аккаунт организатора</CardDescription>
+          <CardDescription>Регистрация недоступна</CardDescription>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" placeholder="you@example.com" {...register("email")} />
-              {errors.email && <p className="text-sm text-red-500">{errors.email.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Пароль</Label>
-              <Input id="password" type="password" placeholder="Минимум 8 символов" {...register("password")} />
-              {errors.password && <p className="text-sm text-red-500">{errors.password.message}</p>}
-            </div>
-            {error && <p className="text-sm text-red-500">{error}</p>}
-            <Button type="submit" className="w-full" disabled={isSubmitting}>
-              {isSubmitting ? "Регистрация..." : "Зарегистрироваться"}
-            </Button>
-          </form>
-          <p className="text-center text-sm text-muted-foreground mt-4">
-            Уже есть аккаунт?{" "}
-            <Link href="/login" className="text-indigo-400 hover:underline">Войти</Link>
+        <CardContent className="text-center space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Регистрация временно недоступна. Обратитесь к администратору для создания аккаунта.
           </p>
+          <Button variant="outline" className="w-full" onClick={() => router.push("/login")}>
+            Войти
+          </Button>
         </CardContent>
       </Card>
     </div>
