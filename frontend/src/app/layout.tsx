@@ -11,7 +11,7 @@ const geistSans = localFont({
 
 export const metadata: Metadata = {
   title: "JudgeFlow",
-  description: "Platform for judging hackathons and competitions",
+  description: "Судейство мероприятий для одного организатора",
 };
 
 export default function RootLayout({
@@ -20,7 +20,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="ru" className="dark">
       <body className={`${geistSans.variable} antialiased`}>
         <Providers>{children}</Providers>
       </body>

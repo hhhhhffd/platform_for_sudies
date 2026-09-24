@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Papa from "papaparse";
 import api from "@/lib/api";
 import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -9,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Slider } from "@/components/ui/slider";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 
@@ -39,14 +39,6 @@ export default function NewEventPage() {
   const [judges, setJudges] = useState<{ name: string }[]>([{ name: "" }, { name: "" }, { name: "" }]);
   const [scoringMode, setScoringMode] = useState<"team" | "criterion">("team");
   const [notesEnabled, setNotesEnabled] = useState(true);
-  const [alertEnabled, setAlertEnabled] = useState(false);
-  const [alertTitle, setAlertTitle] = useState("");
-  const [alertText, setAlertText] = useState("");
-  const [alertAlign, setAlertAlign] = useState<"left" | "center" | "right">("left");
-  const [alertButtonText, setAlertButtonText] = useState("");
-  const [overlayEnabled, setOverlayEnabled] = useState(true);
-  const [overlayColor, setOverlayColor] = useState("#000000");
-  const [overlayOpacity, setOverlayOpacity] = useState(0.35);
 
   const addJudge = () => setJudges((prev) => [...prev, { name: "" }]);
   const removeJudge = (i: number) => setJudges((prev) => prev.filter((_, idx) => idx !== i));
@@ -83,20 +75,25 @@ export default function NewEventPage() {
     setTeams(t);
   };
 
-  const handleCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const lines = text.split("\n").filter((l) => l.trim());
-      const parsed = lines.map((line) => {
-        const [n, d] = line.split(",").map((s) => s.trim());
-        return { name: n || "", description: d || "" };
-      });
-      if (parsed.length) setTeams(parsed);
-    };
-    reader.readAsText(file);
+    try {
+      const parsed = Papa.parse<string[]>(await file.text(), { skipEmptyLines: "greedy" });
+      if (parsed.errors.length) throw new Error(`Ошибка CSV в строке ${(parsed.errors[0]?.row ?? 0) + 1}`);
+      const rows = parsed.data;
+      if (rows[0]?.[0]?.replace(/^\uFEFF/, "").trim().toLowerCase() === "name" || rows[0]?.[0]?.trim().toLowerCase() === "название") {
+        rows.shift();
+      }
+      if (!rows.length || rows.some((row) => row.length > 2 || !row[0]?.trim())) {
+        throw new Error("CSV должен содержать название и необязательное описание в каждой строке");
+      }
+      setTeams(rows.map(([name, description]) => ({ name: name.trim(), description: description?.trim() || "" })));
+      toast({ title: `Загружено команд: ${rows.length}` });
+    } catch (error) {
+      toast({ title: "Не удалось импортировать CSV", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    }
+    e.target.value = "";
   };
 
   const canNext = () => {
@@ -120,14 +117,6 @@ export default function NewEventPage() {
         judge_names: judges.map((j) => j.name.trim() || null),
         scoring_mode: scoringMode,
         notes_enabled: notesEnabled,
-        alert_enabled: alertEnabled,
-        alert_title: alertTitle || null,
-        alert_text: alertText || null,
-        alert_align: alertAlign,
-        alert_button_text: alertButtonText || null,
-        overlay_enabled: overlayEnabled,
-        overlay_color: overlayColor,
-        overlay_opacity: overlayOpacity,
       });
       setResult(res.data);
       setStep(5);
@@ -259,10 +248,14 @@ export default function NewEventPage() {
               </div>
               <div className="border-t pt-4 space-y-3">
                 {teams.map((t, i) => (
-                  <div key={i} className="flex gap-2 items-end">
-                    <div className="flex-1 space-y-1">
+                  <div key={i} className="flex flex-wrap gap-2 items-end">
+                    <div className="flex-1 min-w-36 space-y-1">
                       <Label>Название</Label>
                       <Input value={t.name} onChange={(e) => updateTeam(i, "name", e.target.value)} placeholder="Team Alpha" />
+                    </div>
+                    <div className="flex-1 min-w-36 space-y-1">
+                      <Label>Описание</Label>
+                      <Input value={t.description} onChange={(e) => updateTeam(i, "description", e.target.value)} placeholder="Необязательно" />
                     </div>
                     {teams.length > 1 && (
                       <Button variant="outline" size="sm" onClick={() => removeTeam(i)}>✕</Button>
@@ -339,82 +332,6 @@ export default function NewEventPage() {
                 </label>
               </div>
 
-              {/* Alert on first open */}
-              <div className="space-y-2">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div
-                    onClick={() => setAlertEnabled(!alertEnabled)}
-                    className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${alertEnabled ? "bg-blue-500" : "bg-muted"}`}
-                  >
-                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${alertEnabled ? "translate-x-4" : "translate-x-0"}`} />
-                  </div>
-                  <span className="text-sm font-medium">Алерт при открытии ссылки</span>
-                  <span className="text-xs text-gray-500">{alertEnabled ? "включён" : "отключён"}</span>
-                </label>
-                {alertEnabled && (
-                  <div className="space-y-2">
-                    <Input
-                      placeholder="Заголовок алерта (необязательно)..."
-                      value={alertTitle}
-                      onChange={(e) => setAlertTitle(e.target.value)}
-                    />
-                    <Textarea
-                      placeholder="Текст алерта (необязательно)..."
-                      rows={2}
-                      value={alertText}
-                      onChange={(e) => setAlertText(e.target.value)}
-                    />
-                    <div className="flex gap-2">
-                      {(["left", "center", "right"] as const).map((a) => (
-                        <button key={a} type="button" onClick={() => setAlertAlign(a)}
-                          className={`flex-1 py-1.5 text-xs rounded border-2 transition-colors ${alertAlign === a ? "border-indigo-500 bg-indigo-950/60" : "border-border"}`}>
-                          {a === "left" ? "← Слева" : a === "center" ? "⬛ По центру" : "→ Справа"}
-                        </button>
-                      ))}
-                    </div>
-                    <Input
-                      placeholder='Текст кнопки (по умолч. "Приступить к оцениванию →")'
-                      value={alertButtonText}
-                      onChange={(e) => setAlertButtonText(e.target.value)}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Overlay layer */}
-              <div className="space-y-2">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div
-                    onClick={() => setOverlayEnabled(!overlayEnabled)}
-                    className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${overlayEnabled ? "bg-blue-500" : "bg-muted"}`}
-                  >
-                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${overlayEnabled ? "translate-x-4" : "translate-x-0"}`} />
-                  </div>
-                  <span className="text-sm font-medium">Затемняющий слой поверх фона</span>
-                  <span className="text-xs text-gray-500">{overlayEnabled ? "включён" : "отключён"}</span>
-                </label>
-                {overlayEnabled && (
-                  <div className="grid grid-cols-2 gap-3 pl-1">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Цвет слоя</Label>
-                      <input
-                        type="color"
-                        value={overlayColor}
-                        onChange={(e) => setOverlayColor(e.target.value)}
-                        className="h-9 w-full rounded border cursor-pointer bg-transparent"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Прозрачность: {Math.round(overlayOpacity * 100)}%</Label>
-                      <Slider
-                        min={0} max={100} step={5}
-                        value={[Math.round(overlayOpacity * 100)]}
-                        onValueChange={([v]) => setOverlayOpacity(v / 100)}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
               <div className="flex justify-between pt-2">
                 <Button variant="outline" onClick={() => setStep(3)}>← Назад</Button>
                 <Button onClick={submit} disabled={submitting}>

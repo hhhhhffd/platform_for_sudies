@@ -1,114 +1,78 @@
 # JudgeFlow
 
-Платформа для проведения судейства мероприятий в реальном времени. Организаторы создают события с командами, критериями и судьями. Судьи оценивают через уникальные ссылки-токены. Лидерборд обновляется в реальном времени через WebSocket.
+Сервис для судейства одного организатора. Организатор входит по шестизначному коду из приложения-аутентификатора, создаёт мероприятие и выдаёт судьям персональные ссылки. Регистрации и учётных записей для нескольких организаторов нет.
 
-## Стек технологий
+## Как проходит мероприятие
 
-| Слой               | Технологии                                                                     |
-| ------------------ | ------------------------------------------------------------------------------ |
-| **Backend**        | FastAPI, Python 3.12, SQLAlchemy (async), PostgreSQL 15, Redis 7               |
-| **Frontend**       | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Zustand, Radix UI |
-| **Инфраструктура** | Docker Compose, Nginx, Cloudflare Tunnel                                       |
+1. Создайте черновик: команды, критерии и ссылки судей. При необходимости настройте внешний вид на странице редактирования.
+2. Нажмите **«Начать оценивание»**. До этого судьи видят экран ожидания, а публичная страница не показывает результаты.
+3. Судьи выставляют оценки. Страница результатов показывает предварительные места. Оценки сохраняются на устройстве и отправляются на сервер; судья видит состояние отправки.
+4. Нажмите **«Завершить мероприятие»**. Подробные результаты откроются только после завершения. Если кому-то нужно исправить оценку, можно возобновить оценивание.
 
-## Быстрый старт
+Судейская ссылка даёт доступ к оценкам конкретного судьи. Передавайте её только этому судье. Офлайн-оценка работает, пока уже открытая страница остаётся в браузере; обновление страницы без сети не поддерживается.
 
-### Требования
+## Локальный запуск без Docker
 
-- Docker и Docker Compose
-
-### Запуск
-
-1. Скопируйте `.env.example` в `.env` и заполните переменные:
+Нужны Python 3.12, Node.js 20.9+ (или более новый LTS), PostgreSQL 15+ и Redis 7+. Запустите PostgreSQL и Redis обычным способом для вашей ОС и создайте пустую базу `judgeflow`.
 
 ```bash
+createdb judgeflow
+cd backend
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Обязательные переменные:
-
-- `POSTGRES_PASSWORD` — пароль PostgreSQL
-
-- `SECRET_KEY` — секретный ключ для JWT
-2. Запустите проект:
+В `backend/.env` укажите `DATABASE_URL` для своего пользователя PostgreSQL, случайный `SECRET_KEY` длиной не менее 32 байт и `ORGANIZER_TOTP_SECRET` — Base32 ключ не менее 160 бит. Ключи можно сгенерировать так:
 
 ```bash
+openssl rand -hex 32
+python3 -c 'import base64,secrets; print(base64.b32encode(secrets.token_bytes(20)).decode())'
+```
+
+Добавьте `ORGANIZER_TOTP_SECRET` в приложение-аутентификатор как TOTP: 6 цифр, период 30 секунд, SHA-1. Сохраните ключ в безопасном месте: при его замене текущие сессии организатора станут недействительными. Не передавайте ключ судьям.
+
+```bash
+# В каталоге backend
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+В другом терминале:
+
+```bash
+cd frontend
+cp .env.local.example .env.local
+npm ci
+npm run dev -- --webpack --hostname 127.0.0.1
+```
+
+Откройте `http://127.0.0.1:3000`. В `backend/.env` значение `FRONTEND_URL` должно совпадать с этим адресом. API работает на `127.0.0.1:8000`; `NEXT_PUBLIC_API_URL` и `NEXT_PUBLIC_WS_URL` в `frontend/.env.local` направляют туда запросы и WebSocket.
+
+## Запуск через Docker Compose
+
+```bash
+cp .env.example .env
+# Заполните POSTGRES_PASSWORD, SECRET_KEY, ORGANIZER_TOTP_SECRET
+# Для публичного доступа укажите в FRONTEND_URL точный HTTPS адрес сервиса
+
 docker compose up --build
 ```
 
-3. Откройте [http://localhost](http://localhost) в браузере.
+Откройте `http://localhost` через Nginx. Для доступа по домену настройте HTTPS на внешнем прокси и `FRONTEND_URL=https://ваш-домен`; после смены адреса перезапустите API. Храните `.env` вне системы контроля версий. Настройте резервное копирование базы PostgreSQL и тома `uploads` до использования на реальном мероприятии.
 
-### Публичный доступ через Cloudflare Tunnel
-
-```bash
-# Временная ссылка (бесплатно, без регистрации)
-docker compose --profile tunnel up
-
-# Кастомный домен (нужен токен)
-CLOUDFLARE_TUNNEL_TOKEN=<token> docker compose --profile tunnel-token up
-```
-
-## Архитектура
-
-```
-┌──────────┐    ┌───────┐    ┌─────┐    ┌──────────┐    ┌───────┐
-│ Frontend │◄──►│ Nginx │◄──►│ API │◄──►│ Postgres │    │ Redis │
-│ Next.js  │    │       │    │ Fast│    │          │    │ PubSub│
-└──────────┘    └───────┘    │ API │◄──►│          │    │       │
-                             └──┬──┘    └──────────┘    └───┬───┘
-                                │                           │
-                                └───────────────────────────┘
-                                    publish / subscribe
-```
-
-**Поток оценок в реальном времени:**
-Судья ставит оценку → API сохраняет в БД → публикует в Redis → Redis listener рассылает по WebSocket → live-страница обновляется
-
-**Офлайн-режим:**
-Оценки сохраняются в IndexedDB и синхронизируются с сервером при восстановлении соединения.
-
-## Структура проекта
-
-```
-backend/
-  app/
-    main.py            # FastAPI, lifespan (Redis, WS listener)
-    models.py          # SQLAlchemy: User, Event, Team, Criterion, Score, JudgeToken
-    schemas.py         # Pydantic-схемы
-    auth.py            # JWT (организаторы + токены судей)
-    config.py          # Настройки (DATABASE_URL, REDIS_URL, SECRET_KEY)
-    database.py        # Async SQLAlchemy engine/session
-    redis_client.py    # Redis async client
-    routers/
-      auth.py          # Регистрация, логин, обновление токенов
-      events.py        # CRUD: события, команды, критерии, судьи, результаты, CSV
-      judge.py         # Авторизация судьи, отправка оценок
-      websocket.py     # WebSocket + Redis PubSub → broadcast
-  alembic/             # Миграции БД
-frontend/
-  src/
-    app/               # Страницы Next.js
-    lib/               # API-клиент, IndexedDB, синхронизация
-    stores/            # Zustand: auth, judge
-    components/ui/     # Shadcn-компоненты
-nginx/
-  nginx.conf           # Проксирование API и фронтенда
-docker-compose.yml     # Оркестрация всех сервисов
-```
-
-## Разработка
+## Проверки
 
 ```bash
-# Миграции БД
-cd backend && alembic upgrade head
-cd backend && alembic revision --autogenerate -m "description"
+cd frontend
+npm run lint
+npm run typecheck
+npm run build
+npm audit
 
-# Фронтенд в dev-режиме
-cd frontend && npm run dev
-
-# Логи API
-docker compose logs api -f
+cd ../backend
+.venv/bin/alembic current
+.venv/bin/pip-audit -r requirements.txt  # если установлен pip-audit
 ```
 
-## Лицензия
-
-[MIT](LICENSE)
+Стек: FastAPI, PostgreSQL, Redis, Next.js, React, IndexedDB. HTTP API и live WebSocket проксируются Nginx в Docker; при локальном запуске фронтенд обращается к API напрямую.
