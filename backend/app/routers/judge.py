@@ -19,7 +19,7 @@ logger = get_logger("judge")
 from app.schemas import (
     JudgeAuth, JudgeAuthResponse, JudgeEventResponse,
     EventInfo, CriterionResponse, TeamResponse,
-    ScoresBatch, ScoresSavedResponse, JudgeProgressResponse,
+    ScoresBatch, ScoresSavedResponse, JudgeScoreResponse, JudgeProgressResponse,
 )
 
 router = APIRouter(prefix="/api/judge", tags=["judge"])
@@ -27,7 +27,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/auth", response_model=JudgeAuthResponse)
-@limiter.limit("10/minute")
+@limiter.limit("300/minute")
 async def judge_auth(request: Request, data: JudgeAuth, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(JudgeToken).where(JudgeToken.token == data.token))
     judge = result.scalar_one_or_none()
@@ -62,7 +62,7 @@ async def get_judge_event(
         raise HTTPException(status_code=404, detail="Event not found")
 
     return JudgeEventResponse(
-        event=EventInfo(name=event.name, start_date=event.start_date),
+        event=EventInfo(name=event.name, start_date=event.start_date, status=event.status),
         criteria=[CriterionResponse(id=c.id, name=c.name, max_score=c.max_score) for c in event.criteria],
         teams=[TeamResponse(id=t.id, name=t.name, description=t.description) for t in event.teams],
         scoring_mode=event.scoring_mode,
@@ -91,6 +91,11 @@ async def save_scores(
     judge: JudgeToken = Depends(get_current_judge),
     db: AsyncSession = Depends(get_db),
 ):
+    event_result = await db.execute(select(Event).where(Event.id == judge.event_id).with_for_update())
+    event = event_result.scalar_one_or_none()
+    if not event or event.status != "active":
+        raise HTTPException(status_code=409, detail="Оценивание сейчас закрыто")
+
     # Validate all teams and criteria belong to this event
     team_ids = {s.team_id for s in data.scores}
     criterion_ids = {s.criterion_id for s in data.scores}
@@ -137,11 +142,33 @@ async def save_scores(
         redis = await get_redis()
         if redis:
             await redis.publish(f"event:{judge.event_id}:scores", "updated")
-    except Exception:
-        pass  # Redis not available, skip WebSocket notification
+    except Exception as exc:
+        logger.warning("score_broadcast_failed", event_id=str(judge.event_id), error=str(exc))
 
     logger.info("scores_saved", judge_id=str(judge.id), event_id=str(judge.event_id), count=len(data.scores))
     return ScoresSavedResponse(saved=len(data.scores))
+
+
+@router.get("/events/{event_id}/scores", response_model=list[JudgeScoreResponse])
+async def get_scores(
+    event_id: str,
+    judge: JudgeToken = Depends(get_current_judge),
+    db: AsyncSession = Depends(get_db),
+):
+    if str(judge.event_id) != event_id:
+        raise HTTPException(status_code=403, detail="Token does not belong to this event")
+    result = await db.execute(
+        select(Score).where(Score.event_id == event_id, Score.judge_id == judge.id)
+    )
+    return [
+        JudgeScoreResponse(
+            team_id=score.team_id,
+            criterion_id=score.criterion_id,
+            value=score.value,
+            notes=score.notes,
+        )
+        for score in result.scalars()
+    ]
 
 
 @router.get("/events/{event_id}/progress", response_model=JudgeProgressResponse)

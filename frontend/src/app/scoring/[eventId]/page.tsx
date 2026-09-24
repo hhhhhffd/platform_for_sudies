@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useJudgeStore } from "@/stores/judge-store";
-import { saveScoreLocally, getScoresForEvent } from "@/lib/offline-db";
+import { saveScoreLocally, getScoresForEvent, mergeServerScores } from "@/lib/offline-db";
 import { syncOfflineScores } from "@/lib/sync";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 
 type ScoringMode = "team" | "criterion";
-type SyncStatus = "saved" | "saving" | "pending";
+type SyncStatus = "saved" | "saving" | "pending" | "error";
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(v)));
@@ -27,6 +27,31 @@ function hexToRgba(hex: string, alpha: number): string {
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha})`;
 }
+
+function NavRow({
+    onPrev, onNext, onFinish, current, total, disablePrev, disableNext, label, dark,
+}: { dark: boolean; onPrev: () => void; onNext: () => void; onFinish?: () => void; current: number; total: number; disablePrev: boolean; disableNext: boolean; label?: string | null }) {
+    const isLast = current === total;
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="outline" size="sm" onClick={onPrev} disabled={disablePrev}
+          className={cn("shrink-0", dark && "border-white/30 text-white hover:bg-white/10 hover:text-white disabled:opacity-40")}>←</Button>
+        <span className={cn("text-sm font-semibold tabular-nums select-none", dark ? "text-white/80" : "text-muted-foreground")}>
+          {label ? `${label} ` : ""}{current} / {total}
+        </span>
+        {isLast && onFinish ? (
+          <Button size="sm" onClick={onFinish}
+            className="shrink-0 bg-green-600 hover:bg-green-500 text-white border-0">
+            Готово ✓
+          </Button>
+        ) : (
+          <Button variant="outline" size="sm" onClick={onNext} disabled={disableNext}
+            className={cn("shrink-0", dark && "border-white/30 text-white hover:bg-white/10 hover:text-white disabled:opacity-40")}>→</Button>
+        )}
+      </div>
+    );
+}
+
 
 export default function ScoringPage() {
   const { eventId } = useParams();
@@ -41,11 +66,14 @@ export default function ScoringPage() {
   const setOnline = useJudgeStore((s) => s.setOnline);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [usingCachedEvent, setUsingCachedEvent] = useState(false);
   const [judgeId, setJudgeId] = useState("");
   const [mode, setMode] = useState<ScoringMode>("team");
   const [notesEnabled, setNotesEnabled] = useState(true);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [judgeName, setJudgeName] = useState<string | null>(null);
+  const [eventStatus, setEventStatus] = useState("draft");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("saved");
 
   // Alert state
@@ -77,7 +105,9 @@ export default function ScoringPage() {
   const [allTeamNotes, setAllTeamNotes] = useState<Record<string, string>>({});
   const [allCritNotes, setAllCritNotes] = useState<Record<string, string>>({});
 
-  const syncTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const localSaveFailedRef = useRef(false);
 
   // Auth guard
   useEffect(() => {
@@ -88,7 +118,12 @@ export default function ScoringPage() {
 
   // Online status
   useEffect(() => {
-    const on = () => setOnline(true);
+    const on = () => {
+      setOnline(true);
+      void syncOfflineScores()
+        .then(({ pending }) => setSyncStatus(pending ? "pending" : "saved"))
+        .catch(() => setSyncStatus("error"));
+    };
     const off = () => setOnline(false);
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
@@ -100,7 +135,12 @@ export default function ScoringPage() {
   useEffect(() => {
     const interval = setInterval(async () => {
       if (navigator.onLine) {
-        await syncOfflineScores();
+        try {
+          const { pending } = await syncOfflineScores();
+          setSyncStatus(pending ? "pending" : "saved");
+        } catch {
+          setSyncStatus("error");
+        }
       }
     }, 30000);
     return () => clearInterval(interval);
@@ -110,8 +150,23 @@ export default function ScoringPage() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await api.get(`/api/judge/events/${eid}`);
         const jid = localStorage.getItem("judge_id") || "";
+        const cacheKey = `judge_event_${eid}_${jid}`;
+        let res: { data: any };
+        try {
+          res = await api.get(`/api/judge/events/${eid}`);
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify(res.data));
+          } catch {
+            toast({ title: "Не удалось сохранить мероприятие для офлайн-доступа", variant: "destructive" });
+          }
+        } catch (error: any) {
+          if (error?.response && error.response.status < 500) throw error;
+          const cached = localStorage.getItem(cacheKey);
+          if (!cached) throw error;
+          res = { data: JSON.parse(cached) };
+          setUsingCachedEvent(true);
+        }
         const parsedCriteria = res.data.criteria.map((c: any) => ({ ...c, max_score: Number(c.max_score) }));
         setEvent(eid, jid, res.data.teams, parsedCriteria);
         setJudgeId(jid);
@@ -119,8 +174,8 @@ export default function ScoringPage() {
         setNotesEnabled(res.data.notes_enabled ?? true);
         setBgUrl(res.data.background_url || null);
         setJudgeName(res.data.judge_name || null);
+        setEventStatus(res.data.event.status);
 
-        // Alert: show on first open only
         // Alert: show on first open per version
         const alertVersion = res.data.alert_version ?? 0;
         setAlertVersion(alertVersion);
@@ -143,7 +198,19 @@ export default function ScoringPage() {
         setTeamsLabel(res.data.teams_label || null);
         setTeamsLabelEnabled(res.data.teams_label_enabled ?? true);
 
-        // Pre-load ALL scores from IDB for instant navigation (filtered by this judge)
+        // Server scores are authoritative unless a newer local edit is pending.
+        try {
+          const serverScores = await api.get(`/api/judge/events/${eid}/scores`);
+          await mergeServerScores(eid, jid, serverScores.data);
+        } catch (error: any) {
+          if (error?.response?.status === 401 || error?.response?.status === 403) {
+            setSessionExpired(true);
+            return;
+          }
+          if (error?.response && error.response.status < 500) throw error;
+          // An already loaded judge can continue with local scores while offline.
+        }
+
         const saved = await getScoresForEvent(eid, jid);
         const ts: Record<string, Record<string, number>> = {};
         const tn: Record<string, string> = {};
@@ -155,15 +222,18 @@ export default function ScoringPage() {
           if (s.notes) tn[s.teamId] = s.notes;
           if (!cs[s.criterionId]) cs[s.criterionId] = {};
           cs[s.criterionId][s.teamId] = s.value;
+          if (s.notes) cn[s.criterionId] = s.notes;
         }
         setAllTeamScores(ts);
         setAllTeamNotes(tn);
         setAllCritScores(cs);
         setAllCritNotes(cn);
+        setSyncStatus(saved.some((score) => score.synced === 0) ? "pending" : "saved");
       } catch (err: any) {
-        if (err?.response?.status === 401) {
+        if (err?.response?.status === 401 || err?.response?.status === 403) {
           setSessionExpired(true);
         } else {
+          setLoadError(true);
           toast({ title: "Ошибка загрузки", variant: "destructive" });
         }
       } finally {
@@ -182,26 +252,30 @@ export default function ScoringPage() {
       if (!navigator.onLine) return;
       setSyncStatus("saving");
       try {
-        await syncOfflineScores();
-        setSyncStatus("saved");
+        const { pending } = await syncOfflineScores();
+        setSyncStatus(pending ? "pending" : "saved");
       } catch {
-        setSyncStatus("pending");
+        setSyncStatus("error");
       }
     }, 1500);
   }, []);
 
-  const saveScore = useCallback(async (teamId: string, criterionId: string, value: number, notes: string) => {
-    await saveScoreLocally({
-      judgeId,
-      eventId: eid,
-      teamId,
-      criterionId,
-      value,
-      notes: notes || null,
-      synced: false,
-      updatedAt: Date.now(),
+  const onLocalSaveError = useCallback(() => {
+    localSaveFailedRef.current = true;
+    setSyncStatus("error");
+    toast({ title: "Оценка не сохранена на устройстве", variant: "destructive" });
+  }, [toast]);
+
+  const saveScore = useCallback((teamId: string, criterionId: string, value: number, notes: string) => {
+    const write = writeQueueRef.current.then(async () => {
+      await saveScoreLocally({
+        judgeId, eventId: eid, teamId, criterionId, value,
+        notes: notes || null, synced: false, updatedAt: Date.now(),
+      });
+      scheduleServerSync();
     });
-    scheduleServerSync();
+    writeQueueRef.current = write.catch(() => {});
+    return write;
   }, [judgeId, eid, scheduleServerSync]);
 
   // Team mode: score one criterion for current team
@@ -218,8 +292,8 @@ export default function ScoringPage() {
       [criterionId]: { ...(prev[criterionId] || {}), [team.id]: value },
     }));
 
-    saveScore(team.id, criterionId, value, allTeamNotes[team.id] || "");
-  }, [teams, currentIndex, allTeamNotes, saveScore]);
+    void saveScore(team.id, criterionId, value, allTeamNotes[team.id] || "").catch(onLocalSaveError);
+  }, [teams, currentIndex, allTeamNotes, saveScore, onLocalSaveError]);
 
   // Criterion mode: score current criterion for one team
   const handleCritScore = useCallback((teamId: string, value: number) => {
@@ -235,31 +309,33 @@ export default function ScoringPage() {
       [teamId]: { ...(prev[teamId] || {}), [criterion.id]: value },
     }));
 
-    saveScore(teamId, criterion.id, value, allCritNotes[criterion.id] || "");
-  }, [criteria, criterionIndex, allCritNotes, saveScore]);
+    void saveScore(teamId, criterion.id, value, allCritNotes[criterion.id] || "").catch(onLocalSaveError);
+  }, [criteria, criterionIndex, allCritNotes, saveScore, onLocalSaveError]);
 
   const handleTeamNotes = useCallback(async (val: string) => {
     const team = teams[currentIndex];
     if (!team) return;
     setAllTeamNotes((prev) => ({ ...prev, [team.id]: val }));
+    const writes: Promise<void>[] = [];
     for (const c of criteria) {
       const v = allTeamScores[team.id]?.[c.id];
       if (v !== undefined) {
-        await saveScoreLocally({ judgeId, eventId: eid, teamId: team.id, criterionId: c.id, value: v, notes: val || null, synced: false, updatedAt: Date.now() });
+        writes.push(saveScore(team.id, c.id, v, val));
       }
     }
-    scheduleServerSync();
-  }, [judgeId, teams, currentIndex, criteria, allTeamScores, eid, scheduleServerSync]);
+    await Promise.all(writes);
+  }, [teams, currentIndex, criteria, allTeamScores, saveScore]);
 
   const handleCritNotes = useCallback(async (val: string) => {
     const criterion = criteria[criterionIndex];
     if (!criterion) return;
     setAllCritNotes((prev) => ({ ...prev, [criterion.id]: val }));
+    const writes: Promise<void>[] = [];
     for (const [teamId, v] of Object.entries(allCritScores[criterion.id] || {})) {
-      await saveScoreLocally({ judgeId, eventId: eid, teamId, criterionId: criterion.id, value: v, notes: val || null, synced: false, updatedAt: Date.now() });
+      writes.push(saveScore(teamId, criterion.id, v, val));
     }
-    scheduleServerSync();
-  }, [judgeId, criteria, criterionIndex, allCritScores, eid, scheduleServerSync]);
+    await Promise.all(writes);
+  }, [criteria, criterionIndex, allCritScores, saveScore]);
 
   // ── Instant navigation (synchronous — all data already loaded) ──
   const navigate = (dir: number) => {
@@ -271,10 +347,46 @@ export default function ScoringPage() {
     if (idx >= 0 && idx < criteria.length) setCriterionIndex(idx);
   };
 
+  const finishScoring = async () => {
+    await writeQueueRef.current;
+    if (localSaveFailedRef.current) {
+      toast({ title: "Не удалось сохранить часть оценок", description: "Обновите страницу и проверьте оценки перед завершением", variant: "destructive" });
+      return;
+    }
+    const missingTeam = teams.findIndex((team) =>
+      criteria.some((criterion) => allTeamScores[team.id]?.[criterion.id] === undefined)
+    );
+    if (missingTeam !== -1) {
+      setCurrentIndex(missingTeam);
+      const missingCriterion = criteria.findIndex((criterion) => allTeamScores[teams[missingTeam].id]?.[criterion.id] === undefined);
+      setCriterionIndex(missingCriterion);
+      toast({ title: "Оцените все команды по всем критериям", variant: "destructive" });
+      return;
+    }
+    try {
+      const { pending } = await syncOfflineScores();
+      if (pending > 0) {
+        setSyncStatus("pending");
+        toast({ title: "Оценки ещё не отправлены", description: "Проверьте соединение и попробуйте снова", variant: "destructive" });
+        return;
+      }
+      setSyncStatus("saved");
+      router.push(`/live/${eid}`);
+    } catch {
+      setSyncStatus("error");
+      toast({ title: "Не удалось проверить сохранение", variant: "destructive" });
+    }
+  };
+
   // ── Render helpers ──
   const currentTeam = teams[currentIndex];
   const currentCriterion = criteria[criterionIndex];
-  const syncIcon = syncStatus === "saved" ? "✅" : syncStatus === "saving" ? "⏳" : "💾";
+  const syncLabels: Record<SyncStatus, string> = {
+    saved: "Сохранено",
+    saving: "Сохраняем...",
+    pending: "Ожидает отправки",
+    error: "Ошибка сохранения",
+  };
 
   const dark = !!bgUrl;
   const cardCls = dark ? "bg-black/75 border-white/20 shadow-lg" : "";
@@ -288,29 +400,6 @@ export default function ScoringPage() {
   const activeTeamLabel = teamsLabelEnabled && teamsLabel ? teamsLabel : null;
   const activeCritLabel = criteriaLabelEnabled && criteriaLabel ? criteriaLabel : null;
 
-  const NavRow = ({
-    onPrev, onNext, onFinish, current, total, disablePrev, disableNext, label,
-  }: { onPrev: () => void; onNext: () => void; onFinish?: () => void; current: number; total: number; disablePrev: boolean; disableNext: boolean; label?: string | null }) => {
-    const isLast = current === total;
-    return (
-      <div className="flex items-center justify-between gap-2">
-        <Button variant="outline" size="sm" onClick={onPrev} disabled={disablePrev}
-          className={cn("shrink-0", dark && "border-white/30 text-white hover:bg-white/10 hover:text-white disabled:opacity-40")}>←</Button>
-        <span className={cn("text-sm font-semibold tabular-nums select-none", dark ? "text-white/80" : "text-muted-foreground")}>
-          {label ? `${label} ` : ""}{current} / {total}
-        </span>
-        {isLast && onFinish ? (
-          <Button size="sm" onClick={onFinish}
-            className="shrink-0 bg-green-600 hover:bg-green-500 text-white border-0">
-            Готово ✓
-          </Button>
-        ) : (
-          <Button variant="outline" size="sm" onClick={onNext} disabled={disableNext}
-            className={cn("shrink-0", dark && "border-white/30 text-white hover:bg-white/10 hover:text-white disabled:opacity-40")}>→</Button>
-        )}
-      </div>
-    );
-  };
 
   const bgStyle = bgUrl
     ? { backgroundImage: `url(${bgUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" }
@@ -338,6 +427,29 @@ export default function ScoringPage() {
     </div>
   );
 
+  if (loadError) return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-6 text-center space-y-3">
+      <div>
+        <h1 className="text-lg font-semibold">Не удалось открыть оценивание</h1>
+        <p className="text-sm text-muted-foreground mt-2">Проверьте соединение и откройте ссылку ещё раз.</p>
+        <Button variant="outline" className="mt-4" onClick={() => window.location.reload()}>Повторить</Button>
+      </div>
+    </div>
+  );
+
+  if (eventStatus !== "active") return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-6">
+      <div className="max-w-sm text-center space-y-4">
+        <p className="text-4xl" aria-hidden="true">{eventStatus === "draft" ? "⏳" : "🏁"}</p>
+        <h1 className="text-xl font-semibold">{eventStatus === "draft" ? "Оценивание ещё не началось" : "Оценивание завершено"}</h1>
+        <p className="text-sm text-muted-foreground">{eventStatus === "draft"
+          ? "Организатор откроет оценивание. Обновите страницу после начала."
+          : "Если у вас остались неотправленные оценки, обратитесь к организатору."}</p>
+        <Button variant="outline" onClick={() => window.location.reload()}>Обновить страницу</Button>
+      </div>
+    </div>
+  );
+
   return (
     <div className={cn("min-h-screen", !bgUrl && "bg-background")} style={bgUrl ? bgStyle : {}}>
       {bgUrl && overlayEnabled && (
@@ -360,7 +472,7 @@ export default function ScoringPage() {
           {judgeName && <p className={`text-xs ${subTextCls}`}>{judgeName}</p>}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-sm" title="Статус сохранения">{syncIcon}</span>
+          <span className="text-xs text-muted-foreground" role="status">{syncLabels[syncStatus]}</span>
           <Badge variant={isOnline ? "default" : "destructive"} className="text-xs">
             {isOnline ? "🟢" : "🔴"}
           </Badge>
@@ -368,14 +480,15 @@ export default function ScoringPage() {
       </header>
 
       <main className="relative z-1 max-w-lg mx-auto p-4 space-y-4">
+        {usingCachedEvent && <p role="status" className="text-sm rounded-md bg-amber-500/10 text-amber-300 px-3 py-2">Офлайн-режим: используются сохранённые данные мероприятия.</p>}
         {mode === "team" ? (
           <>
-            <NavRow
+            <NavRow dark={dark}
               onPrev={() => navigate(-1)} onNext={() => navigate(1)}
               current={currentIndex + 1} total={teams.length}
               disablePrev={currentIndex === 0} disableNext={currentIndex === teams.length - 1}
               label={activeTeamLabel}
-              onFinish={() => router.push(`/live/${eid}`)}
+              onFinish={finishScoring}
             />
 
             <Card className={cardCls}>
@@ -387,13 +500,14 @@ export default function ScoringPage() {
             </Card>
 
             {criteria.map((criterion) => {
-              const val = allTeamScores[currentTeam?.id]?.[criterion.id] ?? 0;
+              const score = allTeamScores[currentTeam?.id]?.[criterion.id];
+              const val = score ?? 0;
               return (
                 <Card key={criterion.id} className={cardCls}>
                   <CardContent className="pt-4 space-y-3">
                     <div className="flex justify-between items-center">
                       <span className={`font-medium ${titleCls}`}>{criterion.name}</span>
-                      <span className={`text-sm ${subTextCls}`}>макс. {criterion.max_score}</span>
+                      <span className={`text-sm ${subTextCls}`}>{score === undefined ? "Не оценено · " : ""}макс. {criterion.max_score}</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="flex-1">
@@ -407,7 +521,8 @@ export default function ScoringPage() {
                       <input
                         type="number" inputMode="numeric" pattern="[0-9]*"
                         min={0} max={criterion.max_score}
-                        value={val}
+                        value={score === undefined ? "" : val}
+                        placeholder="—"
                         onChange={(e) => {
                           const v = parseInt(e.target.value, 10);
                           handleTeamScore(criterion.id, isNaN(v) ? 0 : clamp(v, 0, criterion.max_score));
@@ -428,29 +543,29 @@ export default function ScoringPage() {
                     placeholder="Комментарии к команде..."
                     rows={3}
                     value={allTeamNotes[currentTeam?.id] || ""}
-                    onChange={(e) => handleTeamNotes(e.target.value)}
+                    onChange={(e) => { void handleTeamNotes(e.target.value).catch(onLocalSaveError); }}
                     className={dark ? "bg-white/10 text-white border-white/20 placeholder:text-white/40 focus:border-white/40" : ""}
                   />
                 </CardContent>
               </Card>
             )}
 
-            <NavRow
+            <NavRow dark={dark}
               onPrev={() => navigate(-1)} onNext={() => navigate(1)}
               current={currentIndex + 1} total={teams.length}
               disablePrev={currentIndex === 0} disableNext={currentIndex === teams.length - 1}
               label={activeTeamLabel}
-              onFinish={() => router.push(`/live/${eid}`)}
+              onFinish={finishScoring}
             />
           </>
         ) : (
           <>
-            <NavRow
+            <NavRow dark={dark}
               onPrev={() => navigateCrit(-1)} onNext={() => navigateCrit(1)}
               current={criterionIndex + 1} total={criteria.length}
               disablePrev={criterionIndex === 0} disableNext={criterionIndex === criteria.length - 1}
               label={activeCritLabel}
-              onFinish={() => router.push(`/live/${eid}`)}
+              onFinish={finishScoring}
             />
 
             <Card className={cardCls}>
@@ -462,11 +577,12 @@ export default function ScoringPage() {
             </Card>
 
             {teams.map((team) => {
-              const val = allCritScores[currentCriterion?.id]?.[team.id] ?? 0;
+              const score = allCritScores[currentCriterion?.id]?.[team.id];
+              const val = score ?? 0;
               return (
                 <Card key={team.id} className={cardCls}>
                   <CardContent className="pt-4 space-y-3">
-                    <span className={`font-medium ${titleCls}`}>{team.name}</span>
+                    <span className={`font-medium ${titleCls}`}>{team.name}{score === undefined && <span className={`block text-xs font-normal ${subTextCls}`}>Не оценено</span>}</span>
                     <div className="flex items-center gap-3">
                       <div className="flex-1">
                         <Slider
@@ -479,7 +595,8 @@ export default function ScoringPage() {
                       <input
                         type="number" inputMode="numeric" pattern="[0-9]*"
                         min={0} max={currentCriterion?.max_score ?? 10}
-                        value={val}
+                          value={score === undefined ? "" : val}
+                          placeholder="—"
                         onChange={(e) => {
                           const max = currentCriterion?.max_score ?? 10;
                           const v = parseInt(e.target.value, 10);
@@ -501,19 +618,19 @@ export default function ScoringPage() {
                     placeholder="Комментарии по критерию..."
                     rows={3}
                     value={allCritNotes[currentCriterion?.id] || ""}
-                    onChange={(e) => handleCritNotes(e.target.value)}
+                    onChange={(e) => { void handleCritNotes(e.target.value).catch(onLocalSaveError); }}
                     className={dark ? "bg-white/10 text-white border-white/20 placeholder:text-white/40 focus:border-white/40" : ""}
                   />
                 </CardContent>
               </Card>
             )}
 
-            <NavRow
+            <NavRow dark={dark}
               onPrev={() => navigateCrit(-1)} onNext={() => navigateCrit(1)}
               current={criterionIndex + 1} total={criteria.length}
               disablePrev={criterionIndex === 0} disableNext={criterionIndex === criteria.length - 1}
               label={activeCritLabel}
-              onFinish={() => router.push(`/live/${eid}`)}
+              onFinish={finishScoring}
             />
           </>
         )}

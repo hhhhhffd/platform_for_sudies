@@ -48,7 +48,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def get_results_data(event_id: str) -> list[dict]:
+async def get_results_data(event_id: str) -> dict:
     async with async_session() as db:
         result = await db.execute(
             select(Event)
@@ -57,7 +57,9 @@ async def get_results_data(event_id: str) -> list[dict]:
         )
         event = result.scalar_one_or_none()
         if not event:
-            return []
+            return {"status": "missing", "results": []}
+        if event.status == "draft":
+            return {"status": event.status, "results": []}
 
         scores_result = await db.execute(
             select(
@@ -96,7 +98,7 @@ async def get_results_data(event_id: str) -> list[dict]:
             })
 
         results.sort(key=lambda r: r["total_score"], reverse=True)
-        return results
+        return {"status": event.status, "results": results}
 
 
 async def redis_listener():
@@ -118,8 +120,8 @@ async def redis_listener():
                     parts = channel.split(":")
                     if len(parts) == 3:
                         event_id = parts[1]
-                        results = await get_results_data(event_id)
-                        await manager.broadcast(event_id, {"type": "update", "results": results})
+                        data = await get_results_data(event_id)
+                        await manager.broadcast(event_id, {"type": "update", **data})
         except asyncio.CancelledError:
             try:
                 await pubsub.punsubscribe("event:*:scores")
@@ -136,8 +138,8 @@ async def websocket_live(websocket: WebSocket, event_id: str):
     await manager.connect(event_id, websocket)
     try:
         # Send current results on connect
-        results = await get_results_data(event_id)
-        await websocket.send_json({"type": "update", "results": results})
+        data = await get_results_data(event_id)
+        await websocket.send_json({"type": "update", **data})
 
         # Keep connection alive
         while True:

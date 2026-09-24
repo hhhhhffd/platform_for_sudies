@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,8 +13,8 @@ from app.config import settings
 from app.database import get_db
 from app.models import User, JudgeToken
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
+ORGANIZER_EMAIL = "organizer@judgeflow.internal"
 
 from typing import Literal
 
@@ -21,12 +22,8 @@ COOKIE_SECURE = settings.FRONTEND_URL.startswith("https")
 COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
 
 
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+def organizer_key_version() -> str:
+    return sha256(settings.ORGANIZER_TOTP_SECRET.encode()).hexdigest()[:16]
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -46,7 +43,7 @@ def create_refresh_token(data: dict) -> str:
 def decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
@@ -94,9 +91,13 @@ async def get_current_user(
     payload = decode_token(token)
     user_id = payload.get("sub")
     token_type = payload.get("type")
-    if not user_id or token_type != "access":
+    if not user_id or token_type != "organizer_access" or payload.get("key_version") != organizer_key_version():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    result = await db.execute(select(User).where(User.id == UUID(user_id)))
+    try:
+        parsed_id = UUID(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    result = await db.execute(select(User).where(User.id == parsed_id, User.email == ORGANIZER_EMAIL))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
@@ -116,7 +117,11 @@ async def get_current_judge(
     token_type = payload.get("type")
     if not judge_id or token_type != "judge":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid judge token")
-    result = await db.execute(select(JudgeToken).where(JudgeToken.id == UUID(judge_id)))
+    try:
+        parsed_id = UUID(judge_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid judge token")
+    result = await db.execute(select(JudgeToken).where(JudgeToken.id == parsed_id))
     judge = result.scalar_one_or_none()
     if not judge or not judge.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Judge token inactive")

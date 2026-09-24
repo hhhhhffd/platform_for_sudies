@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import api from "@/lib/api";
-import { extractErrorMessage } from "@/lib/utils";
+import { extractErrorMessage, toDatetimeLocal } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,7 @@ export default function EditEventPage() {
   const { toast } = useToast();
 
   const [loading, setLoading] = useState(true);
+  const [eventStatus, setEventStatus] = useState("draft");
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
 
@@ -94,7 +95,8 @@ export default function EditEventPage() {
       const e = res.data;
       setName(e.name);
       setDescription(e.description || "");
-      setStartDate(e.start_date ? new Date(e.start_date).toISOString().slice(0, 16) : "");
+      setStartDate(e.start_date ? toDatetimeLocal(e.start_date) : "");
+      setEventStatus(e.status);
       setLocation(e.location || "");
       setScoringMode(e.scoring_mode || "team");
       setNotesEnabled(e.notes_enabled ?? true);
@@ -136,8 +138,7 @@ export default function EditEventPage() {
         description: description || null,
         start_date: startDate ? new Date(startDate).toISOString() : undefined,
         location: location || null,
-        scoring_mode: scoringMode,
-        notes_enabled: notesEnabled,
+        ...(eventStatus === "draft" ? { scoring_mode: scoringMode, notes_enabled: notesEnabled } : {}),
         alert_enabled: alertEnabled,
         alert_title: alertTitle || null,
         alert_text: alertText || null,
@@ -259,6 +260,7 @@ export default function EditEventPage() {
       </header>
 
       <main className="max-w-2xl mx-auto p-6 space-y-4">
+        {eventStatus !== "draft" && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">После начала оценивания состав, критерии и режим оценки заблокированы. Остальные настройки можно обновить.</p>}
 
         {/* Basic info */}
         <Card>
@@ -272,6 +274,7 @@ export default function EditEventPage() {
         </Card>
 
         {/* Judge settings */}
+        {eventStatus === "draft" && (
         <Card>
           <CardHeader><CardTitle>Настройки оценивания</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -289,6 +292,7 @@ export default function EditEventPage() {
             <Toggle value={notesEnabled} onChange={setNotesEnabled} label="Заметки судей" />
           </CardContent>
         </Card>
+        )}
 
         {/* Judges */}
         <Card>
@@ -321,6 +325,7 @@ export default function EditEventPage() {
         </Card>
 
         {/* Teams */}
+        {eventStatus === "draft" && (
         <Card>
           <CardHeader><CardTitle>Команды ({teams.length})</CardTitle></CardHeader>
           <CardContent className="space-y-2">
@@ -354,8 +359,10 @@ export default function EditEventPage() {
             </div>
           </CardContent>
         </Card>
+        )}
 
         {/* Criteria */}
+        {eventStatus === "draft" && (
         <Card>
           <CardHeader><CardTitle>Критерии ({criteria.length})</CardTitle></CardHeader>
           <CardContent className="space-y-2">
@@ -388,6 +395,7 @@ export default function EditEventPage() {
             </div>
           </CardContent>
         </Card>
+        )}
 
         {/* Labels */}
         <Card>

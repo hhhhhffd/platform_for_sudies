@@ -7,7 +7,7 @@ import { extractErrorMessage } from "@/lib/utils";
 import { syncOfflineScores } from "@/lib/sync";
 
 export default function JudgeAuthPage() {
-  const { eventId, token } = useParams();
+  const { token } = useParams();
   const router = useRouter();
   const [error, setError] = useState("");
 
@@ -16,19 +16,23 @@ export default function JudgeAuthPage() {
       try {
         // Flush any pending offline scores for the previous judge before switching credentials
         if (localStorage.getItem("judge_token")) {
-          try { await syncOfflineScores(); } catch {}
+          const { pending } = await syncOfflineScores();
+          if (pending > 0) {
+            setError("Сначала отправьте сохранённые оценки предыдущего судьи. Проверьте соединение и обновите страницу.");
+            return;
+          }
         }
         const res = await api.post("/api/judge/auth", { token });
         localStorage.setItem("judge_token", res.data.access_token);
         localStorage.setItem("judge_event_id", res.data.event_id);
         localStorage.setItem("judge_id", res.data.judge_id);
-        router.replace(`/scoring/${eventId}`);
+        router.replace(`/scoring/${res.data.event_id}`);
       } catch (e: any) {
         setError(extractErrorMessage(e, "Невалидный токен"));
       }
     }
     if (token) auth();
-  }, [token, eventId, router]);
+  }, [token, router]);
 
   if (error) {
     return (

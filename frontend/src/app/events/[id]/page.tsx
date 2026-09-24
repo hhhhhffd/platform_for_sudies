@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
+import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,6 +21,7 @@ export default function EventDetailPage() {
   const qc = useQueryClient();
 
   const [deleting, setDeleting] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [editingJudge, setEditingJudge] = useState<string | null>(null);
   const [judgeNameInput, setJudgeNameInput] = useState("");
@@ -95,6 +97,36 @@ export default function EventDetailPage() {
     refetchInterval: 10000,
   });
 
+  const { data: progress } = useQuery({
+    queryKey: ["progress", id],
+    queryFn: () => api.get(`/api/events/${id}/progress`).then((r) => r.data),
+    enabled: hydrated && isAuthenticated,
+    refetchInterval: 10000,
+  });
+
+  const changeStatus = async (status: "active" | "completed") => {
+    const incomplete = status === "completed" && progress?.complete_judges < progress?.total_judges;
+    if (status === "completed" && !confirm(incomplete
+      ? "Не все судьи отправили оценки. Завершить всё равно? Неотправленные оценки не попадут в итог до возобновления."
+      : "Завершить оценивание и открыть подробные результаты?")) return;
+    if (event?.status === "completed" && !confirm("Возобновить оценивание? Подробные результаты снова будут скрыты до завершения.")) return;
+    setChangingStatus(true);
+    try {
+      await api.patch(`/api/events/${id}/status`, { status, force: Boolean(incomplete) });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["event", id] }),
+        qc.invalidateQueries({ queryKey: ["results", id] }),
+        qc.invalidateQueries({ queryKey: ["progress", id] }),
+        qc.invalidateQueries({ queryKey: ["events"] }),
+      ]);
+      toast({ title: status === "active" ? "Оценивание открыто" : "Мероприятие завершено" });
+    } catch (error) {
+      toast({ title: "Не удалось сменить состояние", description: extractErrorMessage(error, "Попробуйте ещё раз"), variant: "destructive" });
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
   if (!hydrated) {
     return <div className="min-h-screen flex items-center justify-center"><p className="text-muted-foreground">Загрузка...</p></div>;
   }
@@ -127,27 +159,51 @@ export default function EventDetailPage() {
   if (!event) return <div className="p-6 text-muted-foreground">Мероприятие не найдено</div>;
 
   const maxTotal = event.criteria.reduce((s: number, c: any) => s + Number(c.max_score), 0);
+  const statusLabels: Record<string, string> = { draft: "Черновик", active: "Идёт оценивание", completed: "Завершено" };
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="bg-card border-b border-border px-6 py-4 flex justify-between items-center">
-        <div className="flex items-center gap-3">
+      <header className="bg-card border-b border-border px-4 sm:px-6 py-4 flex flex-col sm:flex-row gap-4 sm:items-center sm:justify-between">
+        <div className="flex items-start sm:items-center gap-3 min-w-0">
           <Link href="/dashboard" className="text-muted-foreground hover:text-foreground">←</Link>
-          <h1 className="text-xl font-bold">{event.name}</h1>
-          <Badge variant="outline">{event.status}</Badge>
+          <h1 className="text-xl font-bold min-w-0 break-words">{event.name}</h1>
+          <Badge variant="outline" className="shrink-0">{statusLabels[event.status] || event.status}</Badge>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Link href={`/events/${id}/edit`}>
             <Button variant="outline" size="sm">✏️ Редактировать</Button>
           </Link>
           <Button variant="outline" size="sm" onClick={exportCSV}>📥 CSV</Button>
           <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
-            {deleting ? "..." : "🗑️"}
+            {deleting ? "Удаление..." : "🗑️ Удалить"}
           </Button>
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto p-6 space-y-6">
+      <main className="max-w-4xl mx-auto p-4 sm:p-6 space-y-6">
+        <Card>
+          <CardHeader><CardTitle className="text-base">Ход мероприятия</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {event.status === "draft" ? "Подготовьте команды и критерии, затем откройте оценивание для судей."
+                : event.status === "active" ? `Завершили ${progress?.complete_judges ?? 0} из ${progress?.total_judges ?? event.judge_tokens.length} судей. Результаты пока предварительные.`
+                : "Оценивание закрыто. Подробные результаты доступны по публичной ссылке."}
+            </p>
+            {progress?.judges?.length > 0 && event.status !== "draft" && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {progress.judges.map((judge: any, index: number) => (
+                  <div key={judge.id} className="flex justify-between gap-2 rounded-md bg-muted px-3 py-2 text-sm">
+                    <span className="truncate">{judge.name || `Судья ${index + 1}`}</span>
+                    <span className="tabular-nums shrink-0">{judge.saved} / {judge.expected}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {event.status === "draft" && <Button disabled={changingStatus} onClick={() => changeStatus("active")}>Начать оценивание</Button>}
+            {event.status === "active" && <Button disabled={changingStatus} onClick={() => changeStatus("completed")}>Завершить мероприятие</Button>}
+            {event.status === "completed" && <Button variant="outline" disabled={changingStatus} onClick={() => changeStatus("active")}>Возобновить оценивание</Button>}
+          </CardContent>
+        </Card>
         {/* Info */}
         <Card className="shadow-sm">
           <CardContent className="pt-6">

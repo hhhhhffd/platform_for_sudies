@@ -19,7 +19,7 @@ from app.routers import auth, events, judge, websocket
 setup_logging()
 logger = get_logger("judgeflow")
 
-UPLOAD_DIR = "/app/uploads"
+UPLOAD_DIR = settings.UPLOAD_DIR
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -46,7 +46,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS: only allow FRONTEND_URL; localhost is added only in dev
 allowed_origins = [settings.FRONTEND_URL]
-if settings.FRONTEND_URL != "http://localhost:3000" and os.getenv("ENV", "production") != "production":
+if settings.FRONTEND_URL != "http://localhost:3000" and settings.ENV != "production":
     allowed_origins.append("http://localhost:3000")
 
 app.add_middleware(

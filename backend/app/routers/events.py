@@ -15,17 +15,20 @@ from sqlalchemy.orm import selectinload
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
+from app.logging_config import get_logger
 from app.models import Event, Criterion, Team, JudgeToken, Score, User
+from app.redis_client import get_redis
 from app.schemas import (
     EventCreate, EventCreateResponse, EventListResponse, EventListItem,
-    EventDetailResponse, EventUpdate, JudgeTokenResponse, JudgeTokenUpdate,
+    EventDetailResponse, EventUpdate, EventStatusUpdate, JudgeTokenResponse, JudgeTokenUpdate,
     CriterionResponse, TeamResponse, TeamCreate, CriterionCreate,
     TeamUpdate, CriterionUpdate, JudgeCreate,
     ResultsResponse, ResultsDetailResponse, TeamDetailResult, JudgeScoreEntry,
     EventInfo, TeamResult, CriterionBreakdown,
 )
 
-UPLOAD_DIR = "/app/uploads"
+UPLOAD_DIR = settings.UPLOAD_DIR
+logger = get_logger("events")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
 
@@ -73,6 +76,28 @@ def generate_token() -> str:
     chars = string.ascii_uppercase + string.digits
     parts = ["".join(secrets.choice(chars) for _ in range(3)) for _ in range(3)]
     return "-".join(parts)
+
+
+async def _get_event_progress(db: AsyncSession, event_id: str) -> dict:
+    teams_count = (await db.execute(select(func.count(Team.id)).where(Team.event_id == event_id))).scalar() or 0
+    criteria_count = (await db.execute(select(func.count(Criterion.id)).where(Criterion.event_id == event_id))).scalar() or 0
+    expected_per_judge = teams_count * criteria_count
+    result = await db.execute(
+        select(JudgeToken.id, JudgeToken.name, func.count(Score.id).label("saved"))
+        .outerjoin(Score, Score.judge_id == JudgeToken.id)
+        .where(JudgeToken.event_id == event_id, JudgeToken.is_active.is_(True))
+        .group_by(JudgeToken.id, JudgeToken.name, JudgeToken.created_at)
+        .order_by(JudgeToken.created_at)
+    )
+    judges = [
+        {"id": str(row.id), "name": row.name, "saved": row.saved, "expected": expected_per_judge}
+        for row in result.all()
+    ]
+    return {
+        "judges": judges,
+        "complete_judges": sum(1 for judge in judges if expected_per_judge > 0 and judge["saved"] >= expected_per_judge),
+        "total_judges": len(judges),
+    }
 
 
 async def _compute_score_map(db: AsyncSession, event_id: str) -> dict[tuple, tuple]:
@@ -175,13 +200,12 @@ async def list_events(
 
     # Count total for pagination
     total_result = await db.execute(
-        select(func.count(Event.id)).where(Event.user_id == user.id)
+        select(func.count(Event.id))
     )
     total = total_result.scalar() or 0
 
     result = await db.execute(
         select(Event)
-        .where(Event.user_id == user.id)
         .options(selectinload(Event.teams), selectinload(Event.judge_tokens))
         .order_by(Event.created_at.desc())
         .limit(limit)
@@ -223,10 +247,17 @@ async def get_event(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    if event.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your event")
-
     return _build_event_detail(event)
+
+
+@router.get("/{event_id}/progress")
+async def get_event_progress(
+    event_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_event_or_404(event_id, db)
+    return await _get_event_progress(db, event_id)
 
 
 @router.patch("/{event_id}", response_model=EventDetailResponse)
@@ -244,9 +275,8 @@ async def update_event(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    if event.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your event")
-
+    if event.status != "draft" and any(field in data.model_fields_set for field in ("scoring_mode", "notes_enabled")):
+        raise HTTPException(status_code=409, detail="Настройки оценивания можно менять только в черновике")
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(event, field, value)
 
@@ -262,6 +292,42 @@ async def update_event(
     return _build_event_detail(event)
 
 
+@router.patch("/{event_id}/status", response_model=EventDetailResponse)
+async def update_event_status(
+    event_id: str,
+    data: EventStatusUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Event).where(Event.id == event_id).with_for_update())
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    allowed = {"draft": "active", "active": "completed", "completed": "active"}
+    if allowed.get(event.status) != data.status:
+        raise HTTPException(status_code=409, detail="Недопустимый переход состояния мероприятия")
+    progress = await _get_event_progress(db, event_id)
+    if event.status == "draft" and (progress["total_judges"] == 0 or not progress["judges"][0]["expected"]):
+        raise HTTPException(status_code=409, detail="Добавьте команды, критерии и судей перед началом")
+    if event.status == "active" and progress["complete_judges"] < progress["total_judges"] and not data.force:
+        raise HTTPException(status_code=409, detail="Не все судьи завершили оценивание")
+    event.status = data.status
+    await db.commit()
+
+    try:
+        redis = await get_redis()
+        if redis:
+            await redis.publish(f"event:{event.id}:scores", "updated")
+    except Exception as exc:
+        logger.warning("status_broadcast_failed", event_id=str(event.id), error=str(exc))
+
+    result = await db.execute(
+        select(Event).where(Event.id == event_id)
+        .options(selectinload(Event.criteria), selectinload(Event.teams), selectinload(Event.judge_tokens))
+    )
+    return _build_event_detail(result.scalar_one())
+
+
 @router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_event(
     event_id: str,
@@ -272,8 +338,6 @@ async def delete_event(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    if event.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your event")
     await db.delete(event)
     await db.commit()
 
@@ -289,6 +353,13 @@ async def get_results(event_id: str, db: AsyncSession = Depends(get_db)):
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+
+    if event.status == "draft":
+        return ResultsResponse(
+            event=EventInfo(name=event.name, start_date=event.start_date, status=event.status),
+            results=[],
+            background_url=event.background_url,
+        )
 
     score_map = await _compute_score_map(db, event_id)
 
@@ -315,7 +386,7 @@ async def get_results(event_id: str, db: AsyncSession = Depends(get_db)):
     team_results.sort(key=lambda r: r.total_score, reverse=True)
 
     return ResultsResponse(
-        event=EventInfo(name=event.name, start_date=event.start_date),
+        event=EventInfo(name=event.name, start_date=event.start_date, status=event.status),
         results=team_results,
         background_url=event.background_url,
     )
@@ -332,6 +403,8 @@ async def get_results_detail(event_id: str, db: AsyncSession = Depends(get_db)):
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    if event.status != "completed":
+        raise HTTPException(status_code=403, detail="Подробные результаты откроются после завершения")
 
     # All judge tokens for this event (ordered by creation)
     all_judges = {str(jt.id): jt for jt in event.judge_tokens}
@@ -381,7 +454,7 @@ async def get_results_detail(event_id: str, db: AsyncSession = Depends(get_db)):
         ))
 
     return ResultsDetailResponse(
-        event=EventInfo(name=event.name, start_date=event.start_date),
+        event=EventInfo(name=event.name, start_date=event.start_date, status=event.status),
         criteria=[CriterionResponse(id=c.id, name=c.name, max_score=c.max_score) for c in event.criteria],
         teams=team_details,
     )
@@ -402,9 +475,6 @@ async def export_csv(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    if event.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your event")
-
     score_map_raw = await _compute_score_map(db, event_id)
     score_map: dict[tuple, Decimal] = {
         k: round(v[0], 2) for k, v in score_map_raw.items()
@@ -449,7 +519,7 @@ async def upload_background(
 
     result = await db.execute(select(Event).where(Event.id == event_id))
     event = result.scalar_one_or_none()
-    if not event or event.user_id != user.id:
+    if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
     ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
@@ -473,7 +543,7 @@ async def delete_background(
 ):
     result = await db.execute(select(Event).where(Event.id == event_id))
     event = result.scalar_one_or_none()
-    if not event or event.user_id != user.id:
+    if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     if event.background_url:
         filepath = os.path.join(UPLOAD_DIR, event.background_url.split("?")[0].split("/")[-1])
@@ -493,7 +563,7 @@ async def update_judge(
 ):
     event_result = await db.execute(select(Event).where(Event.id == event_id))
     event = event_result.scalar_one_or_none()
-    if not event or event.user_id != user.id:
+    if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
     jt_result = await db.execute(
@@ -521,7 +591,7 @@ async def reset_alerts(
 ):
     result = await db.execute(select(Event).where(Event.id == event_id))
     event = result.scalar_one_or_none()
-    if not event or event.user_id != user.id:
+    if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     event.alert_version = (event.alert_version or 0) + 1
     await db.commit()
@@ -529,17 +599,19 @@ async def reset_alerts(
 
 # ── Teams CRUD ──────────────────────────────────────────────────────────────
 
-async def _get_event_or_403(event_id: str, user: User, db: AsyncSession) -> Event:
+async def _get_event_or_404(event_id: str, db: AsyncSession, draft_only: bool = False) -> Event:
     result = await db.execute(select(Event).where(Event.id == event_id))
     event = result.scalar_one_or_none()
-    if not event or event.user_id != user.id:
+    if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    if draft_only and event.status != "draft":
+        raise HTTPException(status_code=409, detail="Состав и критерии можно менять только в черновике")
     return event
 
 
 @router.post("/{event_id}/teams", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
 async def add_team(event_id: str, data: TeamCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     cnt = (await db.execute(select(func.count(Team.id)).where(Team.event_id == event_id))).scalar() or 0
     team = Team(event_id=event_id, name=data.name, description=data.description, order_index=cnt)
     db.add(team)
@@ -550,7 +622,7 @@ async def add_team(event_id: str, data: TeamCreate, user: User = Depends(get_cur
 
 @router.patch("/{event_id}/teams/{team_id}", response_model=TeamResponse)
 async def update_team(event_id: str, team_id: str, data: TeamUpdate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     result = await db.execute(select(Team).where(Team.id == team_id, Team.event_id == event_id))
     team = result.scalar_one_or_none()
     if not team:
@@ -564,7 +636,7 @@ async def update_team(event_id: str, team_id: str, data: TeamUpdate, user: User 
 
 @router.delete("/{event_id}/teams/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_team(event_id: str, team_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     result = await db.execute(select(Team).where(Team.id == team_id, Team.event_id == event_id))
     team = result.scalar_one_or_none()
     if not team:
@@ -577,7 +649,7 @@ async def delete_team(event_id: str, team_id: str, user: User = Depends(get_curr
 
 @router.post("/{event_id}/criteria", response_model=CriterionResponse, status_code=status.HTTP_201_CREATED)
 async def add_criterion(event_id: str, data: CriterionCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     cnt = (await db.execute(select(func.count(Criterion.id)).where(Criterion.event_id == event_id))).scalar() or 0
     c = Criterion(event_id=event_id, name=data.name, max_score=data.max_score, order_index=cnt)
     db.add(c)
@@ -588,7 +660,7 @@ async def add_criterion(event_id: str, data: CriterionCreate, user: User = Depen
 
 @router.patch("/{event_id}/criteria/{criterion_id}", response_model=CriterionResponse)
 async def update_criterion(event_id: str, criterion_id: str, data: CriterionUpdate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     result = await db.execute(select(Criterion).where(Criterion.id == criterion_id, Criterion.event_id == event_id))
     c = result.scalar_one_or_none()
     if not c:
@@ -602,7 +674,7 @@ async def update_criterion(event_id: str, criterion_id: str, data: CriterionUpda
 
 @router.delete("/{event_id}/criteria/{criterion_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_criterion(event_id: str, criterion_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db, draft_only=True)
     result = await db.execute(select(Criterion).where(Criterion.id == criterion_id, Criterion.event_id == event_id))
     c = result.scalar_one_or_none()
     if not c:
@@ -615,7 +687,7 @@ async def delete_criterion(event_id: str, criterion_id: str, user: User = Depend
 
 @router.post("/{event_id}/judges", response_model=JudgeTokenResponse, status_code=status.HTTP_201_CREATED)
 async def add_judge(event_id: str, data: JudgeCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    await _get_event_or_403(event_id, user, db)
+    await _get_event_or_404(event_id, db)
     token_str = generate_token()
     # ensure uniqueness
     while (await db.execute(select(JudgeToken).where(JudgeToken.token == token_str))).scalar_one_or_none():

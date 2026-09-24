@@ -27,11 +27,12 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && !original._retry) {
+    if (error.response?.status === 401 && original && !original._retry) {
       original._retry = true;
       // Only refresh for organizer tokens, not judge
       const isJudge = original.url?.startsWith("/api/judge") || original.url?.startsWith("/ws/");
-      if (isJudge) {
+      const isAuthAction = original.url === "/api/auth/login" || original.url === "/api/auth/refresh";
+      if (isJudge || isAuthAction || localStorage.getItem("is_authenticated") !== "true") {
         return Promise.reject(error);
       }
       try {
@@ -44,6 +45,7 @@ api.interceptors.response.use(
             .catch((err) => {
               // Only clear on explicit rejection
               if (err.response?.status === 401 || err.response?.status === 403) {
+                localStorage.removeItem("is_authenticated");
                 window.location.href = "/login";
               }
               throw err;

@@ -1,40 +1,14 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # === Auth ===
-class AuthRegister(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-
-
 class AuthLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class AuthRefresh(BaseModel):
-    refresh_token: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-
-
-class UserResponse(BaseModel):
-    id: UUID
-    email: str
-
-
-class RegisterResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    user: UserResponse
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 # === Events ===
@@ -187,6 +161,11 @@ class EventUpdate(BaseModel):
         return _clamp_event_date(v)
 
 
+class EventStatusUpdate(BaseModel):
+    status: Literal["active", "completed"]
+    force: bool = False
+
+
 class JudgeTokenUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
 
@@ -221,6 +200,7 @@ class TeamResult(BaseModel):
 class EventInfo(BaseModel):
     name: str
     start_date: datetime
+    status: str
 
 
 class ResultsResponse(BaseModel):
@@ -298,6 +278,13 @@ class ScoresBatch(BaseModel):
 
 class ScoresSavedResponse(BaseModel):
     saved: int
+
+
+class JudgeScoreResponse(BaseModel):
+    team_id: UUID
+    criterion_id: UUID
+    value: Decimal
+    notes: Optional[str] = None
 
 
 class JudgeProgressResponse(BaseModel):

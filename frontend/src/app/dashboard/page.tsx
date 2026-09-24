@@ -12,7 +12,7 @@ import Link from "next/link";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { isAuthenticated, hydrated, userEmail, logout } = useAuthStore();
+  const { isAuthenticated, hydrated, logout } = useAuthStore();
 
   useEffect(() => {
     if (hydrated && !isAuthenticated) router.replace("/login");
@@ -29,6 +29,11 @@ export default function DashboardPage() {
     active: "border-l-4 border-l-green-500",
     completed: "border-l-4 border-l-gray-400",
   };
+  const statusLabel: Record<string, string> = {
+    draft: "Подготовка",
+    active: "Идёт оценивание",
+    completed: "Завершено",
+  };
 
   if (!hydrated) {
     return <div className="min-h-screen flex items-center justify-center"><p className="text-muted-foreground">Загрузка...</p></div>;
@@ -41,7 +46,7 @@ export default function DashboardPage() {
       <header className="bg-card border-b border-border px-6 py-4 flex justify-between items-center">
         <h1 className="text-xl font-bold">🏆 JudgeFlow</h1>
         <div className="flex items-center gap-4">
-          <span className="text-sm text-muted-foreground">{userEmail}</span>
+          <span className="text-sm text-muted-foreground">Организатор</span>
           <Button variant="outline" size="sm" onClick={async () => { try { await api.post("/api/auth/logout"); } catch {} logout(); router.push("/login"); }}>
             Выйти
           </Button>
@@ -49,7 +54,7 @@ export default function DashboardPage() {
       </header>
 
       <main className="max-w-4xl mx-auto p-6">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-wrap gap-3 justify-between items-center mb-6">
           <h2 className="text-2xl font-bold">Мероприятия</h2>
           <Link href="/events/new">
             <Button>+ Создать мероприятие</Button>
@@ -80,19 +85,19 @@ export default function DashboardPage() {
               <Link key={event.id} href={`/events/${event.id}`} className="block">
                 <Card className={`hover:shadow-lg transition-all duration-200 cursor-pointer ${statusBorderColor[event.status] || ""}`}>
                   <CardHeader className="pb-2">
-                    <div className="flex justify-between items-start">
-                      <CardTitle className="text-lg">{event.name}</CardTitle>
+                    <div className="flex flex-wrap gap-2 justify-between items-start">
+                      <CardTitle className="text-lg break-words min-w-0">{event.name}</CardTitle>
                       <Badge className={
                         event.status === "draft" ? "bg-amber-400/10 text-amber-400 border-amber-400/20" :
                         event.status === "active" ? "bg-green-400/10 text-green-400 border-green-400/20" :
                         "bg-white/10 text-white/50 border-white/10"
                       }>
-                        {event.status}
+                        {statusLabel[event.status] || event.status}
                       </Badge>
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="flex gap-4 text-sm text-gray-500">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
                       <span>📅 {new Date(event.start_date).toLocaleDateString("ru")}</span>
                       <span>👥 {event.teams_count} команд</span>
                       <span>⚖️ {event.judges_count} судей</span>

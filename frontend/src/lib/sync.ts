@@ -1,11 +1,21 @@
 import api from "./api";
 import { getUnsyncedScores, markSynced } from "./offline-db";
 
-export async function syncOfflineScores() {
-  // Only sync the current judge's scores — never send another judge's data
-  const judgeId = localStorage.getItem("judge_id") || "";
+type SyncResult = { synced: number; pending: number };
+let inFlight: Promise<SyncResult> | null = null;
+
+export function syncOfflineScores(): Promise<SyncResult> {
+  if (!inFlight) {
+    inFlight = performSync().finally(() => { inFlight = null; });
+  }
+  return inFlight;
+}
+
+async function performSync(): Promise<SyncResult> {
+  const judgeId = localStorage.getItem("judge_id");
+  if (!judgeId) return { synced: 0, pending: 0 };
   const unsynced = await getUnsyncedScores(judgeId);
-  if (unsynced.length === 0) return 0;
+  if (unsynced.length === 0) return { synced: 0, pending: 0 };
 
   // Group by event
   const byEvent = new Map<string, typeof unsynced>();
@@ -28,12 +38,12 @@ export async function syncOfflineScores() {
           notes: s.notes,
         })),
       });
-      await markSynced(scores.map((s) => s.id));
+      await markSynced(scores);
       totalSynced += scores.length;
     } catch {
-      // Will retry next cycle
+      // Keep these entries pending for the next sync attempt.
     }
   }
 
-  return totalSynced;
+  return { synced: totalSynced, pending: (await getUnsyncedScores(judgeId)).length };
 }

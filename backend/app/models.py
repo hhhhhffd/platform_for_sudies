@@ -21,6 +21,8 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    totp_last_step = Column(Integer)
+    totp_key_version = Column(String(16))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     events = relationship("Event", back_populates="owner", cascade="all, delete-orphan")

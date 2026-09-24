@@ -2,14 +2,15 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useAuthStore } from "@/stores/auth-store";
 
 export default function Home() {
   const router = useRouter();
+  const { hydrated, isAuthenticated } = useAuthStore();
 
   useEffect(() => {
-    const isAuth = localStorage.getItem("is_authenticated") === "true";
-    router.replace(isAuth ? "/dashboard" : "/login");
-  }, [router]);
+    if (hydrated) router.replace(isAuthenticated ? "/dashboard" : "/login");
+  }, [hydrated, isAuthenticated, router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center">

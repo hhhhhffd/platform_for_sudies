@@ -1,6 +1,6 @@
 import { openDB, DBSchema } from "idb";
 
-interface ScoreEntry {
+export interface ScoreEntry {
   id: string; // `${judgeId}-${teamId}-${criterionId}`
   judgeId: string;
   eventId: string;
@@ -29,12 +29,11 @@ const DB_VERSION = 4;
 function getDB() {
   return openDB<JudgeFlowDB>(DB_NAME, DB_VERSION, {
     upgrade(db) {
-      if (db.objectStoreNames.contains("scores")) {
-        db.deleteObjectStore("scores");
+      if (!db.objectStoreNames.contains("scores")) {
+        const store = db.createObjectStore("scores", { keyPath: "id" });
+        store.createIndex("by-event", "eventId");
+        store.createIndex("by-synced", "synced");
       }
-      const store = db.createObjectStore("scores", { keyPath: "id" });
-      store.createIndex("by-event", "eventId");
-      store.createIndex("by-synced", "synced");
     },
   });
 }
@@ -57,12 +56,35 @@ export async function getUnsyncedScores(judgeId?: string) {
   return judgeId ? all.filter((s) => s.judgeId === judgeId) : all;
 }
 
-export async function markSynced(ids: string[]) {
+export async function mergeServerScores(eventId: string, judgeId: string, scores: { team_id: string; criterion_id: string; value: number; notes: string | null }[]) {
   const db = await getDB();
   const tx = db.transaction("scores", "readwrite");
-  for (const id of ids) {
-    const entry = await tx.store.get(id);
-    if (entry) {
+  for (const score of scores) {
+    const id = `${judgeId}-${score.team_id}-${score.criterion_id}`;
+    const local = await tx.store.get(id);
+    if (!local || local.synced === 1) {
+      await tx.store.put({
+        id,
+        judgeId,
+        eventId,
+        teamId: score.team_id,
+        criterionId: score.criterion_id,
+        value: Number(score.value),
+        notes: score.notes,
+        synced: 1,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+  await tx.done;
+}
+
+export async function markSynced(scores: ScoreEntry[]) {
+  const db = await getDB();
+  const tx = db.transaction("scores", "readwrite");
+  for (const score of scores) {
+    const entry = await tx.store.get(score.id);
+    if (entry && entry.synced === 0 && entry.updatedAt === score.updatedAt && entry.value === score.value && entry.notes === score.notes) {
       entry.synced = 1;
       await tx.store.put(entry);
     }

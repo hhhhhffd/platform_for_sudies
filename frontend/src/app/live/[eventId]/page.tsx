@@ -47,6 +47,8 @@ export default function LivePage() {
   const [eventName, setEventName] = useState<string | null>(null);
   const [eventDate, setEventDate] = useState<string | null>(null);
   const [results, setResults] = useState<TeamResult[]>([]);
+  const [eventStatus, setEventStatus] = useState("draft");
+  const [loadError, setLoadError] = useState("");
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
@@ -55,22 +57,35 @@ export default function LivePage() {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailData | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
 
   const ws = useRef<WebSocket | null>(null);
 
-  // Initial load
-  useEffect(() => {
-    api.get(`/api/events/${eventId}/results`).then((res) => {
+  const loadResults = useCallback(async () => {
+    try {
+      const res = await api.get(`/api/events/${eventId}/results`);
       setEventName(res.data.event.name);
       setEventDate(res.data.event.start_date);
+      setEventStatus(res.data.event.status);
       setResults(res.data.results.map((r: any) => ({
         ...r,
         total_score: Number(r.total_score),
         breakdown: r.breakdown.map((b: any) => ({ ...b, score: Number(b.score) })),
       })));
-      if (res.data.background_url) setBgUrl(res.data.background_url);
-    }).catch(() => {});
+      setBgUrl(res.data.background_url || null);
+      setLoadError("");
+    } catch {
+      setLoadError("Не удалось загрузить результаты");
+    }
   }, [eventId]);
+
+  useEffect(() => { void loadResults(); }, [loadResults]);
+
+  useEffect(() => {
+    if (connected) return;
+    const interval = setInterval(() => { void loadResults(); }, 10000);
+    return () => clearInterval(interval);
+  }, [connected, loadResults]);
 
   // WebSocket with reconnect
   useEffect(() => {
@@ -80,7 +95,7 @@ export default function LivePage() {
 
     function connect() {
       if (cancelled) return;
-      const wsUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
       const socket = new WebSocket(`${wsUrl}/ws/events/${eventId}/live`);
       ws.current = socket;
       socket.onopen = () => { setConnected(true); backoff = 1000; };
@@ -95,6 +110,7 @@ export default function LivePage() {
         try {
           const data = JSON.parse(evt.data);
           if (data.type === "update" && data.results) {
+            if (data.status) setEventStatus(data.status);
             setResults((prev) => data.results.map((r: any) => {
               const existing = prev.find((p) => p.team_id === r.team_id);
               return {
@@ -109,7 +125,9 @@ export default function LivePage() {
             // Detail cache is invalidated on modal close, not here,
             // so an open modal keeps its data during live updates
           }
-        } catch {}
+        } catch {
+          socket.close();
+        }
       };
     }
     connect();
@@ -120,6 +138,7 @@ export default function LivePage() {
   const loadDetail = useCallback(async () => {
     if (detail) return;
     setLoadingDetail(true);
+    setDetailError("");
     try {
       const res = await api.get(`/api/events/${eventId}/results/detail`);
       const d: DetailData = {
@@ -134,12 +153,15 @@ export default function LivePage() {
         })),
       };
       setDetail(d);
-    } catch {} finally {
+    } catch {
+      setDetailError("Не удалось загрузить подробные результаты");
+    } finally {
       setLoadingDetail(false);
     }
   }, [eventId, detail]);
 
   const openTeam = (teamId: string) => {
+    if (eventStatus !== "completed") return;
     setSelectedTeamId(teamId);
     loadDetail();
   };
@@ -147,6 +169,7 @@ export default function LivePage() {
   const closeModal = () => {
     setSelectedTeamId(null);
     setDetail(null); // invalidate so next open fetches fresh data
+    setDetailError("");
   };
 
   const selectedTeamResult = results.find((r) => r.team_id === selectedTeamId);
@@ -171,7 +194,7 @@ export default function LivePage() {
                 LIVE
               </span>
             ) : (
-              <span className="text-white/60 text-xs font-bold tracking-widest uppercase">Переподключение...</span>
+              <span className="text-white/60 text-xs font-bold tracking-widest uppercase">Связь восстанавливается · проверка каждые 10 с</span>
             )}
             {lastUpdate && (
               <span className="text-white/60 text-xs">· {lastUpdate.toLocaleTimeString("ru")}</span>
@@ -183,17 +206,20 @@ export default function LivePage() {
               {new Date(eventDate).toLocaleDateString("ru", { day: "numeric", month: "long", year: "numeric" })}
             </p>
           )}
+          {eventStatus === "active" && <p className="text-amber-300 text-sm mt-3">Предварительные результаты</p>}
+          {eventStatus === "completed" && <p className="text-green-300 text-sm mt-3">Итоговые результаты</p>}
         </header>
 
         <main className="max-w-2xl mx-auto px-4 pb-12 space-y-2">
+          {loadError && <p role="alert" className="text-center text-red-300 py-4">{loadError}</p>}
           {results.length === 0 ? (
             <div className="text-center py-20 text-white/60">
               <p className="text-5xl mb-4">⏳</p>
-              <p className="text-lg">Оценки пока не выставлены</p>
+              <p className="text-lg">{eventStatus === "draft" ? "Оценивание ещё не началось" : "Оценки пока не выставлены"}</p>
             </div>
           ) : (
             results.map((team, i) => {
-              const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
+              const medal = eventStatus === "completed" ? (i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null) : null;
               const barWidth = results[0].total_score > 0 ? (team.total_score / results[0].total_score) * 100 : 0;
               const barColor = i === 0
                 ? "linear-gradient(to right, #f59e0b, #fbbf24)"
@@ -212,7 +238,8 @@ export default function LivePage() {
               return (
                 <button
                   key={team.team_id}
-                  className={`w-full text-left rounded-xl p-4 border border-white/[0.08] transition-all duration-300 hover:bg-white/[0.06] hover:border-white/20 hover:scale-[1.005] active:scale-100 ${cardAccent}`}
+                  disabled={eventStatus !== "completed"}
+                  className={`w-full text-left rounded-xl p-4 border border-white/[0.08] transition-all duration-300 ${eventStatus === "completed" ? "hover:bg-white/[0.06] hover:border-white/20 hover:scale-[1.005] active:scale-100" : "cursor-default"} ${cardAccent}`}
                   onClick={() => openTeam(team.team_id)}
                 >
                   <div className="flex items-center gap-3 sm:gap-4">
@@ -279,6 +306,7 @@ export default function LivePage() {
               {loadingDetail && (
                 <p className="text-white/60 text-center py-10">Загрузка...</p>
               )}
+              {detailError && <p role="alert" className="text-red-300 text-center py-8">{detailError}</p>}
               {!loadingDetail && selectedTeamDetail && (
                 <>
                   {selectedTeamDetail.team_description && (

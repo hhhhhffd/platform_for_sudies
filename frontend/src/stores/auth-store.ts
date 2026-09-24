@@ -1,27 +1,26 @@
 import { create } from "zustand";
+import api from "@/lib/api";
 
 interface AuthState {
   isAuthenticated: boolean;
-  userEmail: string | null;
   hydrated: boolean;
-  login: (email?: string) => void;
+  login: () => void;
   logout: () => void;
-  hydrate: () => void;
+  hydrate: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
-  userEmail: null,
   hydrated: false,
-  login: (email) => {
+  login: () => {
     // Clear judge tokens to avoid role conflicts
     localStorage.removeItem("judge_token");
     localStorage.removeItem("judge_event_id");
     localStorage.removeItem("judge_id");
     // Mark as authenticated (actual tokens are in httpOnly cookies)
     localStorage.setItem("is_authenticated", "true");
-    if (email) localStorage.setItem("user_email", email);
-    set({ isAuthenticated: true, userEmail: email || null });
+    localStorage.removeItem("user_email");
+    set({ isAuthenticated: true });
   },
   logout: () => {
     localStorage.removeItem("is_authenticated");
@@ -30,11 +29,19 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem("judge_token");
     localStorage.removeItem("judge_event_id");
     localStorage.removeItem("judge_id");
-    set({ isAuthenticated: false, userEmail: null });
+    set({ isAuthenticated: false });
   },
-  hydrate: () => {
-    const isAuth = localStorage.getItem("is_authenticated") === "true";
-    const email = localStorage.getItem("user_email");
-    set({ isAuthenticated: isAuth, userEmail: email, hydrated: true });
+  hydrate: async () => {
+    if (localStorage.getItem("is_authenticated") !== "true") {
+      set({ isAuthenticated: false, hydrated: true });
+      return;
+    }
+    try {
+      await api.get("/api/auth/session");
+      set({ isAuthenticated: true, hydrated: true });
+    } catch {
+      localStorage.removeItem("is_authenticated");
+      set({ isAuthenticated: false, hydrated: true });
+    }
   },
 }));

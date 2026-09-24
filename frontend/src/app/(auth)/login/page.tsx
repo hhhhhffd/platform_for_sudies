@@ -1,10 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import api from "@/lib/api";
 import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -13,56 +10,62 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-const schema = z.object({
-  email: z.string().email("Невалидный email"),
-  password: z.string().min(1, "Введите пароль"),
-});
-
-type FormData = z.infer<typeof schema>;
-
 export default function LoginPage() {
   const router = useRouter();
-  const login = useAuthStore((s) => s.login);
+  const login = useAuthStore((state) => state.login);
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
-    resolver: zodResolver(schema),
-  });
+  const [submitting, setSubmitting] = useState(false);
 
-  const onSubmit = async (data: FormData) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(code)) {
+      setError("Введите шесть цифр из приложения-аутентификатора");
+      return;
+    }
+    setSubmitting(true);
     setError("");
     try {
-      await api.post("/api/auth/login", data);
-      // Tokens are set as httpOnly cookies by the server
-      login(data.email);
-      router.push("/dashboard");
-    } catch (e: any) {
-      setError(extractErrorMessage(e, "Неверный email или пароль"));
+      await api.post("/api/auth/login", { code });
+      login();
+      router.replace("/dashboard");
+    } catch (error) {
+      setError(extractErrorMessage(error, "Не удалось войти"));
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)" }}>
-      <Card className="w-full max-w-md shadow-2xl">
-        <CardHeader className="text-center">
-          <div className="text-5xl mb-2">🏆</div>
+    <div className="min-h-screen flex items-center justify-center p-4 bg-background">
+      <Card className="w-full max-w-md shadow-xl">
+        <CardHeader className="text-center space-y-3">
+          <div className="text-4xl" aria-hidden="true">🏆</div>
           <CardTitle className="text-3xl">JudgeFlow</CardTitle>
-          <CardDescription>Войдите в аккаунт</CardDescription>
+          <CardDescription>Панель организатора</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form method="post" onSubmit={onSubmit} className="space-y-5">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" placeholder="you@example.com" {...register("email")} />
-              {errors.email && <p className="text-sm text-red-500">{errors.email.message}</p>}
+              <Label htmlFor="code">Код доступа</Label>
+              <Input
+                id="code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                placeholder="000000"
+                value={code}
+                onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                className="text-center text-2xl tracking-[0.35em] font-mono"
+                autoFocus
+              />
+              <p className="text-sm text-muted-foreground">Шестизначный код из приложения-аутентификатора.</p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Пароль</Label>
-              <Input id="password" type="password" {...register("password")} />
-              {errors.password && <p className="text-sm text-red-500">{errors.password.message}</p>}
-            </div>
-            {error && <p className="text-sm text-red-500">{error}</p>}
-            <Button type="submit" className="w-full" disabled={isSubmitting}>
-              {isSubmitting ? "Вход..." : "Войти"}
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+            <Button type="submit" className="w-full" disabled={submitting || code.length !== 6}>
+              {submitting ? "Проверяем код..." : "Войти"}
             </Button>
           </form>
         </CardContent>
