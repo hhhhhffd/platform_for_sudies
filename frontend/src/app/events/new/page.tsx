@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, FileUp, ImagePlus, Plus, Trash2, Trophy } from "lucide-react";
 import api from "@/lib/api";
 import { extractErrorMessage } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -15,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 
 interface Criterion { name: string; max_score: string }
 interface Team { name: string; description: string }
+const steps = ["Основное", "Критерии", "Команды", "Судьи"];
 
 export default function NewEventPage() {
   const router = useRouter();
@@ -23,10 +26,15 @@ export default function NewEventPage() {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
 
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [step]);
+
   // Step 1
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [startDate, setStartDate] = useState("");
+  const [startDateError, setStartDateError] = useState(false);
   const [location, setLocation] = useState("");
 
   // Step 2
@@ -97,7 +105,7 @@ export default function NewEventPage() {
   };
 
   const canNext = () => {
-    if (step === 1) return name.trim() && startDate;
+    if (step === 1) return Boolean(name.trim() && startDate && !startDateError);
     if (step === 2) return criteria.every((c) => c.name.trim() && Number(c.max_score) > 0);
     if (step === 3) return teams.every((t) => t.name.trim());
     return true;
@@ -127,9 +135,13 @@ export default function NewEventPage() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: "Скопировано!" });
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: "Ссылка скопирована" });
+    } catch {
+      toast({ title: "Не удалось скопировать ссылку", variant: "destructive" });
+    }
   };
 
   const handleBgUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -151,52 +163,73 @@ export default function NewEventPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="bg-card border-b border-border px-6 py-4">
-        <h1 className="text-xl font-bold">🏆 Создание мероприятия</h1>
+      <header className="border-b border-border bg-card/70">
+        <div className="mx-auto flex max-w-3xl items-center gap-3 px-5 py-4 sm:px-8">
+          <Button asChild variant="ghost" size="icon" aria-label="К мероприятиям">
+            <Link href="/dashboard"><ArrowLeft className="size-5" aria-hidden="true" /></Link>
+          </Button>
+          <Trophy className="size-5 text-primary" aria-hidden="true" />
+          <span className="font-semibold">JudgeFlow</span>
+        </div>
       </header>
 
-      <main className="max-w-2xl mx-auto p-6">
-        {/* Progress */}
+      <main className="mx-auto max-w-3xl px-5 py-9 sm:px-8 sm:py-12">
+        <div className="mb-8">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary">Подготовка мероприятия</p>
+          <h1 className="text-3xl font-semibold tracking-tight">{step === 5 ? "Мероприятие создано" : "Новое мероприятие"}</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{step === 5 ? "Ссылки готовы. Откройте мероприятие, когда будете готовы начать оценивание." : "Добавьте главное сейчас. До начала оценивания всё можно изменить."}</p>
+        </div>
         {step <= 4 && (
-          <div className="flex items-center gap-2 mb-6">
-            {[1, 2, 3, 4].map((s) => (
-              <div key={s} className="flex items-center gap-2 flex-1">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 transition-colors ${s < step ? "bg-indigo-600 text-white" : s === step ? "bg-indigo-600 text-white ring-4 ring-indigo-200" : "bg-muted text-muted-foreground"}`}>
-                  {s < step ? "✓" : s}
-                </div>
-                {s < 4 && <div className={`h-1 flex-1 rounded ${s < step ? "bg-indigo-600" : "bg-muted"}`} />}
-              </div>
-            ))}
-          </div>
+          <nav aria-label="Шаги создания" className="mb-7">
+            <ol className="grid grid-cols-4 gap-2 sm:gap-4">
+              {steps.map((title, index) => {
+                const number = index + 1;
+                return (
+                  <li key={title} aria-current={number === step ? "step" : undefined} className="min-w-0">
+                    <div className={"mb-2 h-1 rounded-full " + (number <= step ? "bg-primary" : "bg-muted")} />
+                    <div className={"flex items-center gap-2 text-xs sm:text-sm " + (number === step ? "font-semibold text-foreground" : "text-muted-foreground")}>
+                      <span className={"flex size-6 shrink-0 items-center justify-center rounded-full text-xs " + (number <= step ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{number < step ? <Check className="size-3.5" aria-hidden="true" /> : number}</span>
+                      <span className="hidden truncate sm:inline">{title}</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            <p className="mt-3 text-sm text-muted-foreground sm:hidden">Шаг {step} из 4 · {steps[step - 1]}</p>
+          </nav>
         )}
 
         {/* Step 1: Basic Info */}
         {step === 1 && (
-          <Card>
+          <Card className="shadow-none">
             <CardHeader>
               <CardTitle>Основная информация</CardTitle>
-              <CardDescription>Шаг 1 из 4</CardDescription>
+              <CardDescription>Название и дата будут видны судьям и зрителям.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-5">
               <div className="space-y-2">
-                <Label>Название *</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Хакатон AI 2026" />
+                <Label htmlFor="event-name">Название <span aria-hidden="true">*</span></Label>
+                <Input id="event-name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Городской хакатон" />
               </div>
               <div className="space-y-2">
-                <Label>Описание</Label>
-                <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Описание мероприятия" />
+                <Label htmlFor="event-description">Описание</Label>
+                <Textarea id="event-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="О чём мероприятие" />
               </div>
               <div className="space-y-2">
-                <Label>Дата и время *</Label>
-                <Input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                <Label htmlFor="event-date">Дата и время <span aria-hidden="true">*</span></Label>
+                <Input id="event-date" required type="datetime-local" value={startDate} onChange={(e) => {
+                  setStartDate(e.target.value);
+                  setStartDateError(Boolean(e.target.value && new Date(e.target.value).getTime() < Date.now() - 60000));
+                }} />
+                {startDateError && <p role="alert" className="text-sm text-destructive">Укажите дату и время в будущем.</p>}
               </div>
               <div className="space-y-2">
-                <Label>Место</Label>
-                <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Сколково" />
+                <Label htmlFor="event-location">Место</Label>
+                <Input id="event-location" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Городской центр проектов" />
               </div>
-              <div className="flex justify-between">
+              <div className="flex items-center justify-between border-t border-border pt-5">
                 <Button variant="outline" onClick={() => router.push("/dashboard")}>Отменить</Button>
-                <Button onClick={() => setStep(2)} disabled={!canNext()}>Далее →</Button>
+                <Button onClick={() => setStep(2)} disabled={!canNext()}>К критериям <ArrowRight className="size-4" aria-hidden="true" /></Button>
               </div>
             </CardContent>
           </Card>
@@ -204,31 +237,31 @@ export default function NewEventPage() {
 
         {/* Step 2: Criteria */}
         {step === 2 && (
-          <Card>
+          <Card className="shadow-none">
             <CardHeader>
               <CardTitle>Критерии оценки</CardTitle>
-              <CardDescription>Шаг 2 из 4</CardDescription>
+              <CardDescription>Для каждого критерия укажите максимальный балл.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-5">
               {criteria.map((c, i) => (
-                <div key={i} className="flex gap-2 items-end">
-                  <div className="flex-1 space-y-1">
-                    <Label>Название</Label>
-                    <Input value={c.name} onChange={(e) => updateCriterion(i, "name", e.target.value)} placeholder="Идея" />
+                <div key={i} className="flex items-end gap-2 rounded-lg border border-border p-3 sm:gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <Label htmlFor={"criterion-name-" + i}>Критерий {i + 1}</Label>
+                    <Input id={"criterion-name-" + i} value={c.name} onChange={(e) => updateCriterion(i, "name", e.target.value)} placeholder="Идея" />
                   </div>
-                  <div className="w-28 space-y-1">
-                    <Label>Макс балл</Label>
-                    <Input type="number" min="1" value={c.max_score} onChange={(e) => updateCriterion(i, "max_score", e.target.value)} />
+                  <div className="w-20 shrink-0 space-y-1 sm:w-28">
+                    <Label htmlFor={"criterion-score-" + i}>Макс. балл</Label>
+                    <Input id={"criterion-score-" + i} type="number" min="1" value={c.max_score} onChange={(e) => updateCriterion(i, "max_score", e.target.value)} />
                   </div>
                   {criteria.length > 1 && (
-                    <Button variant="outline" size="sm" onClick={() => removeCriterion(i)}>✕</Button>
+                    <Button variant="ghost" size="icon" aria-label={"Удалить критерий " + (i + 1)} onClick={() => removeCriterion(i)}><Trash2 className="size-4" aria-hidden="true" /></Button>
                   )}
                 </div>
               ))}
-              <Button variant="outline" onClick={addCriterion}>+ Добавить критерий</Button>
-              <div className="flex justify-between">
-                <Button variant="outline" onClick={() => setStep(1)}>← Назад</Button>
-                <Button onClick={() => setStep(3)} disabled={!canNext()}>Далее →</Button>
+              <Button variant="outline" onClick={addCriterion}><Plus className="size-4" aria-hidden="true" />Добавить критерий</Button>
+              <div className="flex justify-between border-t border-border pt-5">
+                <Button variant="outline" onClick={() => setStep(1)}>Назад</Button>
+                <Button onClick={() => setStep(3)} disabled={!canNext()}>К командам <ArrowRight className="size-4" aria-hidden="true" /></Button>
               </div>
             </CardContent>
           </Card>
@@ -236,37 +269,39 @@ export default function NewEventPage() {
 
         {/* Step 3: Teams */}
         {step === 3 && (
-          <Card>
+          <Card className="shadow-none">
             <CardHeader>
               <CardTitle>Команды</CardTitle>
-              <CardDescription>Шаг 3 из 4. Можно загрузить CSV (name,description)</CardDescription>
+              <CardDescription>Добавьте команды вручную или загрузите CSV с названием и описанием.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label>Импорт из CSV</Label>
-                <Input type="file" accept=".csv" onChange={handleCSV} className="mt-1" />
+            <CardContent className="space-y-5">
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Импорт из CSV</p>
+                <input id="team-csv" type="file" accept=".csv,text/csv" onChange={handleCSV} className="peer sr-only" />
+                <label htmlFor="team-csv" className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-ring"><FileUp className="size-4" aria-hidden="true" />Выбрать CSV-файл</label>
+                <p className="text-xs text-muted-foreground">Столбцы: название, описание. Импорт заменит текущий список команд.</p>
               </div>
-              <div className="border-t pt-4 space-y-3">
+              <div className="space-y-3 border-t border-border pt-5">
                 {teams.map((t, i) => (
-                  <div key={i} className="flex flex-wrap gap-2 items-end">
-                    <div className="flex-1 min-w-36 space-y-1">
-                      <Label>Название</Label>
-                      <Input value={t.name} onChange={(e) => updateTeam(i, "name", e.target.value)} placeholder="Team Alpha" />
+                  <div key={i} className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-3 sm:gap-3">
+                    <div className="w-full space-y-1 sm:min-w-32 sm:flex-1">
+                      <Label htmlFor={"team-name-" + i}>Команда {i + 1}</Label>
+                      <Input id={"team-name-" + i} value={t.name} onChange={(e) => updateTeam(i, "name", e.target.value)} placeholder="Название команды" />
                     </div>
-                    <div className="flex-1 min-w-36 space-y-1">
-                      <Label>Описание</Label>
-                      <Input value={t.description} onChange={(e) => updateTeam(i, "description", e.target.value)} placeholder="Необязательно" />
+                    <div className="w-full space-y-1 sm:min-w-32 sm:flex-1">
+                      <Label htmlFor={"team-description-" + i}>Описание</Label>
+                      <Input id={"team-description-" + i} value={t.description} onChange={(e) => updateTeam(i, "description", e.target.value)} placeholder="Необязательно" />
                     </div>
                     {teams.length > 1 && (
-                      <Button variant="outline" size="sm" onClick={() => removeTeam(i)}>✕</Button>
+                      <Button variant="ghost" size="icon" aria-label={"Удалить команду " + (i + 1)} onClick={() => removeTeam(i)}><Trash2 className="size-4" aria-hidden="true" /></Button>
                     )}
                   </div>
                 ))}
-                <Button variant="outline" onClick={addTeam}>+ Добавить команду</Button>
+                <Button variant="outline" onClick={addTeam}><Plus className="size-4" aria-hidden="true" />Добавить команду</Button>
               </div>
-              <div className="flex justify-between">
-                <Button variant="outline" onClick={() => setStep(2)}>← Назад</Button>
-                <Button onClick={() => setStep(4)} disabled={!canNext()}>Далее →</Button>
+              <div className="flex justify-between border-t border-border pt-5">
+                <Button variant="outline" onClick={() => setStep(2)}>Назад</Button>
+                <Button onClick={() => setStep(4)} disabled={!canNext()}>К судьям <ArrowRight className="size-4" aria-hidden="true" /></Button>
               </div>
             </CardContent>
           </Card>
@@ -274,68 +309,62 @@ export default function NewEventPage() {
 
         {/* Step 4: Judges */}
         {step === 4 && (
-          <Card>
+          <Card className="shadow-none">
             <CardHeader>
-              <CardTitle>Судьи и режим оценки</CardTitle>
-              <CardDescription>Шаг 4 из 4</CardDescription>
+              <CardTitle>Судьи и порядок оценки</CardTitle>
+              <CardDescription>Каждому судье будет создана персональная ссылка.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
               <div className="space-y-2">
-                <Label>Судьи ({judges.length})</Label>
+                <p className="text-sm font-medium">Судьи ({judges.length})</p>
                 <div className="space-y-2">
                   {judges.map((j, i) => (
                     <div key={i} className="flex gap-2 items-center">
                       <Input
+                        aria-label={"Имя судьи " + (i + 1)}
                         placeholder={`Судья ${i + 1} (необязательно)`}
                         value={j.name}
                         onChange={(e) => setJudgeName(i, e.target.value)}
                       />
                       {judges.length > 1 && (
-                        <Button type="button" variant="ghost" size="sm" onClick={() => removeJudge(i)} className="shrink-0 text-red-500">✕</Button>
+                        <Button type="button" variant="ghost" size="icon" aria-label={"Удалить судью " + (i + 1)} onClick={() => removeJudge(i)} className="shrink-0"><Trash2 className="size-4" aria-hidden="true" /></Button>
                       )}
                     </div>
                   ))}
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={addJudge}>+ Добавить судью</Button>
+                <Button type="button" variant="outline" onClick={addJudge}><Plus className="size-4" aria-hidden="true" />Добавить судью</Button>
               </div>
-              <div className="space-y-2">
-                <Label>Режим оценивания судьями</Label>
-                <div className="grid grid-cols-2 gap-3 mt-1">
-                  <button
-                    type="button"
-                    onClick={() => setScoringMode("team")}
-                    className={`p-3 rounded-lg border-2 text-left transition-colors ${scoringMode === "team" ? "border-indigo-500 bg-indigo-950/60" : "border-border hover:border-border/80"}`}
-                  >
-                    <div className="font-medium text-sm">👤 По команде</div>
-                    <div className="text-xs text-muted-foreground mt-1">Судья оценивает одну команду по всем критериям, затем переходит к следующей</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setScoringMode("criterion")}
-                    className={`p-3 rounded-lg border-2 text-left transition-colors ${scoringMode === "criterion" ? "border-indigo-500 bg-indigo-950/60" : "border-border hover:border-border/80"}`}
-                  >
-                    <div className="font-medium text-sm">📋 По критерию</div>
-                    <div className="text-xs text-muted-foreground mt-1">Судья оценивает все команды по одному критерию, затем переходит к следующему</div>
-                  </button>
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium">Порядок оценки</legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block cursor-pointer">
+                    <input className="peer sr-only" type="radio" name="scoring-mode" checked={scoringMode === "team"} onChange={() => setScoringMode("team")} />
+                    <span className="block h-full rounded-lg border-2 border-border p-4 transition-colors peer-checked:border-primary peer-checked:bg-primary/10 peer-focus-visible:ring-2 peer-focus-visible:ring-ring">
+                      <span className="block text-sm font-semibold">По команде</span>
+                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Все критерии одной команды, затем следующая команда.</span>
+                    </span>
+                  </label>
+                  <label className="block cursor-pointer">
+                    <input className="peer sr-only" type="radio" name="scoring-mode" checked={scoringMode === "criterion"} onChange={() => setScoringMode("criterion")} />
+                    <span className="block h-full rounded-lg border-2 border-border p-4 transition-colors peer-checked:border-primary peer-checked:bg-primary/10 peer-focus-visible:ring-2 peer-focus-visible:ring-ring">
+                      <span className="block text-sm font-semibold">По критерию</span>
+                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Все команды по одному критерию, затем следующий критерий.</span>
+                    </span>
+                  </label>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div
-                    onClick={() => setNotesEnabled(!notesEnabled)}
-                    className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${notesEnabled ? "bg-blue-500" : "bg-muted"}`}
-                  >
-                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${notesEnabled ? "translate-x-4" : "translate-x-0"}`} />
-                  </div>
-                  <span className="text-sm font-medium">Заметки судей</span>
-                  <span className="text-xs text-gray-500">{notesEnabled ? "включены" : "отключены"}</span>
-                </label>
-              </div>
+              </fieldset>
+              <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-border p-4">
+                <span>
+                  <span className="block text-sm font-medium">Заметки судей</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">Судьи смогут оставить комментарий к оценке.</span>
+                </span>
+                <input type="checkbox" checked={notesEnabled} onChange={(event) => setNotesEnabled(event.target.checked)} className="size-5 shrink-0 accent-primary" />
+              </label>
 
-              <div className="flex justify-between pt-2">
-                <Button variant="outline" onClick={() => setStep(3)}>← Назад</Button>
+              <div className="flex justify-between border-t border-border pt-5">
+                <Button variant="outline" onClick={() => setStep(3)}>Назад</Button>
                 <Button onClick={submit} disabled={submitting}>
-                  {submitting ? "Создание..." : "🚀 Создать мероприятие"}
+                  {submitting ? "Создание..." : "Создать мероприятие"}
                 </Button>
               </div>
             </CardContent>
@@ -344,47 +373,46 @@ export default function NewEventPage() {
 
         {/* Step 5: Result */}
         {step === 5 && result && (
-          <Card>
+          <Card className="shadow-none">
             <CardHeader>
-              <CardTitle>✅ Мероприятие создано!</CardTitle>
+              <CardTitle className="flex items-center gap-2"><Check className="size-5 text-emerald-400" aria-hidden="true" />Ссылки готовы</CardTitle>
               <CardDescription>{result.name}</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
               <div>
-                <Label className="text-base font-semibold">Ссылки для судей:</Label>
-                <div className="space-y-2 mt-2">
+                <h2 className="text-sm font-semibold">Ссылки для судей</h2>
+                <p className="mt-1 text-xs text-muted-foreground">Каждую ссылку передайте только её судье.</p>
+                <div className="mt-3 space-y-2">
                   {result.judge_tokens.map((jt: any, i: number) => (
-                    <div key={jt.id} className="flex items-center gap-2 bg-muted/60 border border-border p-2 rounded">
-                      <span className="text-sm font-mono flex-1 text-muted-foreground">
-                        {jt.name || `Судья ${i + 1}`}: {jt.token}
-                      </span>
-                      <Button size="sm" variant="outline" onClick={() => window.open(`${window.location.origin}/judge/${result.id}/${jt.token}`, "_blank")}>↗</Button>
-                      <Button size="sm" variant="outline" onClick={() => copyToClipboard(`${window.location.origin}/judge/${result.id}/${jt.token}`)}>
-                        📋
-                      </Button>
+                    <div key={jt.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3">
+                      <span className="min-w-0 break-words text-sm font-medium">{jt.name || `Судья ${i + 1}`}</span>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" asChild><Link href={`/judge/${result.id}/${jt.token}`} target="_blank" rel="noopener noreferrer" aria-label={`Открыть ссылку судьи ${jt.name || i + 1}`}><ExternalLink className="size-4" aria-hidden="true" /></Link></Button>
+                        <Button size="sm" variant="outline" onClick={() => void copyToClipboard(`${window.location.origin}/judge/${result.id}/${jt.token}`)}><Copy className="size-4" aria-hidden="true" />Копировать</Button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
               <div>
-                <Label className="text-base font-semibold">Публичная ссылка:</Label>
-                <div className="flex items-center gap-2 bg-muted/60 border border-border p-2 rounded mt-2">
-                  <span className="text-sm font-mono flex-1 text-muted-foreground">{`${window.location.origin}/live/${result.id}`}</span>
-                  <Button size="sm" variant="outline" onClick={() => window.open(`${window.location.origin}/live/${result.id}`, "_blank")}>↗ Открыть</Button>
-                  <Button size="sm" variant="outline" onClick={() => copyToClipboard(`${window.location.origin}/live/${result.id}`)}>
-                    📋
-                  </Button>
+                <h2 className="text-sm font-semibold">Страница результатов</h2>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3">
+                  <span className="min-w-0 break-all text-xs text-muted-foreground">{`${window.location.origin}/live/${result.id}`}</span>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" asChild><Link href={`/live/${result.id}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="size-4" aria-hidden="true" />Открыть</Link></Button>
+                    <Button size="sm" variant="outline" onClick={() => void copyToClipboard(`${window.location.origin}/live/${result.id}`)}><Copy className="size-4" aria-hidden="true" />Копировать</Button>
+                  </div>
                 </div>
               </div>
-              <div className="border-t pt-4">
-                <p className="text-sm font-semibold mb-2">🖼️ Фоновое изображение <span className="font-normal text-gray-500">(необязательно)</span></p>
+              <div className="border-t border-border pt-5">
+                <p className="mb-2 text-sm font-semibold">Фоновое изображение <span className="font-normal text-muted-foreground">(необязательно)</span></p>
                 <input ref={bgInputRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
                 <Button variant="outline" size="sm" onClick={() => bgInputRef.current?.click()} disabled={uploadingBg}>
-                  {uploadingBg ? "Загрузка..." : bgUploaded ? "✅ Фон загружен · Заменить" : "Загрузить фон"}
+                  <ImagePlus className="size-4" aria-hidden="true" />{uploadingBg ? "Загрузка..." : bgUploaded ? "Фон загружен · Заменить" : "Загрузить фон"}
                 </Button>
                 <p className="text-xs text-muted-foreground mt-1">Отображается у судей и в live-режиме. Макс 5 МБ.</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 border-t border-border pt-5">
                 <Button onClick={() => router.push(`/events/${result.id}`)}>Открыть мероприятие</Button>
                 <Button variant="outline" onClick={() => router.push("/dashboard")}>К списку</Button>
               </div>
